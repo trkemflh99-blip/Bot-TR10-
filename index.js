@@ -1,302 +1,268 @@
-// ================= KEEP ALIVE =================
-const express = require("express");
-const app = express();
-app.get("/", (req, res) => res.send("Bot Running"));
-app.listen(process.env.PORT || 3000);
-
-// ================= DISCORD =================
 const {
   Client,
   GatewayIntentBits,
   Partials,
+  PermissionsBitField,
   SlashCommandBuilder,
   Routes,
-  REST,
-  PermissionsBitField
+  REST
 } = require("discord.js");
 
+const express = require("express");
 const fs = require("fs");
 
-const TOKEN = process.env.TOKEN;
-const CLIENT_ID = process.env.CLIENT_ID;
+//////////////////////
+// KEEP ALIVE
+//////////////////////
+const app = express();
+app.get("/", (req, res) => res.send("TR10 BOT ONLINE"));
+app.listen(3000);
 
-if (!TOKEN || !CLIENT_ID) {
-  console.log("❌ حط TOKEN و CLIENT_ID في Environment");
-  process.exit(1);
-}
-
+//////////////////////
+// CLIENT
+//////////////////////
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildVoiceStates,
-    GatewayIntentBits.GuildMembers
+    GatewayIntentBits.MessageContent
   ],
   partials: [Partials.Channel]
 });
 
-// ================= DATABASE =================
-if (!fs.existsSync("./data.json")) {
-  fs.writeFileSync("./data.json", JSON.stringify({
-    users: {},
-    settings: {},
-    lastDaily: Date.now(),
-    lastWeekly: Date.now()
-  }, null, 2));
+//////////////////////
+// DATABASE
+//////////////////////
+let db = {};
+if (fs.existsSync("data.json")) {
+  db = JSON.parse(fs.readFileSync("data.json"));
 }
 
-let db = JSON.parse(fs.readFileSync("./data.json"));
-
-function saveDB() {
-  fs.writeFileSync("./data.json", JSON.stringify(db, null, 2));
+function save() {
+  fs.writeFileSync("data.json", JSON.stringify(db, null, 2));
 }
 
 function getUser(guild, user) {
-  if (!db.users[guild]) db.users[guild] = {};
-  if (!db.users[guild][user]) {
-    db.users[guild][user] = {
+  if (!db[guild]) db[guild] = {};
+  if (!db[guild][user])
+    db[guild][user] = {
       text: 0,
       voice: 0,
-      dailyText: 0,
-      dailyVoice: 0,
-      weeklyText: 0,
-      weeklyVoice: 0,
+      daily: 0,
+      weekly: 0,
       level: 0
     };
-  }
-  return db.users[guild][user];
+  return db[guild][user];
 }
 
-// ================= LEVEL SYSTEM =================
-function checkLevel(member, guildId) {
-  const user = getUser(guildId, member.id);
-  const total = user.text + user.voice;
-  const needed = (user.level + 1) * 500;
+//////////////////////
+// LEVEL SYSTEM
+//////////////////////
+function checkLevel(guildId, userId, member) {
+  const data = getUser(guildId, userId);
+  const needed = (data.level + 1) * 500;
 
-  if (total >= needed) {
-    user.level++;
-
-    const settings = db.settings[guildId] || {};
-    const msgTpl = settings.levelMsg || "🎉 {user} وصلت لفل {level}!";
-    const chId = settings.levelChannel;
-
-    if (chId) {
-      const ch = member.guild.channels.cache.get(chId);
-      if (ch)
-        ch.send(
-          msgTpl.replace("{user}", `<@${member.id}>`)
-                .replace("{level}", user.level)
-        );
-    }
-
-    if (settings.levelRole && user.level >= settings.levelRole.level) {
-      const role = member.guild.roles.cache.get(settings.levelRole.roleId);
-      if (role) member.roles.add(role).catch(() => {});
-    }
-
-    saveDB();
+  if (data.text + data.voice >= needed) {
+    data.level++;
+    member.send(`🔥 مبروك وصلت لفل ${data.level}`);
+    save();
   }
 }
 
-// ================= TEXT XP =================
+//////////////////////
+// TEXT XP
+//////////////////////
 client.on("messageCreate", msg => {
-  if (!msg.guild || msg.author.bot) return;
+  if (msg.author.bot || !msg.guild) return;
 
-  const user = getUser(msg.guild.id, msg.author.id);
+  const data = getUser(msg.guild.id, msg.author.id);
 
-  user.text += 10;
-  user.dailyText += 10;
-  user.weeklyText += 10;
+  data.text += 5;
+  data.daily += 5;
+  data.weekly += 5;
 
-  checkLevel(msg.member, msg.guild.id);
-  saveDB();
+  checkLevel(msg.guild.id, msg.author.id, msg.member);
+  save();
 
   if (msg.content === "!help") {
-    msg.reply("استخدم /help لعرض الأوامر");
+    msg.reply("📜 استخدم /help لعرض الأوامر");
   }
 });
 
-// ================= VOICE XP =================
+//////////////////////
+// VOICE XP
+//////////////////////
 setInterval(() => {
   client.guilds.cache.forEach(guild => {
-    guild.members.cache.forEach(member => {
-      if (member.voice.channel && !member.user.bot) {
-        const user = getUser(guild.id, member.id);
-        user.voice += 5;
-        user.dailyVoice += 5;
-        user.weeklyVoice += 5;
-        checkLevel(member, guild.id);
-      }
-    });
+    guild.channels.cache
+      .filter(c => c.isVoiceBased())
+      .forEach(channel => {
+        channel.members.forEach(member => {
+          if (!member.user.bot) {
+            const data = getUser(guild.id, member.id);
+            data.voice += 10;
+            data.daily += 10;
+            data.weekly += 10;
+            checkLevel(guild.id, member.id, member);
+          }
+        });
+      });
   });
-  saveDB();
+  save();
 }, 60000);
 
-// ================= RESET SYSTEM =================
-setInterval(() => {
-  const now = Date.now();
-
-  if (now - db.lastDaily >= 24 * 60 * 60 * 1000) {
-    for (const g in db.users)
-      for (const u in db.users[g]) {
-        db.users[g][u].dailyText = 0;
-        db.users[g][u].dailyVoice = 0;
-      }
-    db.lastDaily = now;
-    console.log("🔄 Daily Reset");
-  }
-
-  if (now - db.lastWeekly >= 7 * 24 * 60 * 60 * 1000) {
-    for (const g in db.users)
-      for (const u in db.users[g]) {
-        db.users[g][u].weeklyText = 0;
-        db.users[g][u].weeklyVoice = 0;
-      }
-    db.lastWeekly = now;
-    console.log("🔄 Weekly Reset");
-  }
-
-  saveDB();
-}, 60000);
-
-// ================= COMMANDS =================
+//////////////////////
+// SLASH COMMANDS
+//////////////////////
 const commands = [
   new SlashCommandBuilder()
     .setName("xp")
-    .setDescription("عرض الاكس بي")
-    .addStringOption(o =>
-      o.setName("mode")
-        .setDescription("v = صوتي / t = دردشة")
-        .addChoices(
-          { name: "voice", value: "v" },
-          { name: "text", value: "t" }
-        )
+    .setDescription("عرض الاكس بي"),
+
+  new SlashCommandBuilder()
+    .setName("top")
+    .setDescription("توب 10"),
+
+  new SlashCommandBuilder()
+    .setName("topweek")
+    .setDescription("توب أسبوعي"),
+
+  new SlashCommandBuilder()
+    .setName("قفل")
+    .setDescription("قفل الروم")
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+
+  new SlashCommandBuilder()
+    .setName("فتح")
+    .setDescription("فتح الروم")
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+
+  new SlashCommandBuilder()
+    .setName("help")
+    .setDescription("عرض جميع الأوامر"),
+
+  new SlashCommandBuilder()
+    .setName("owner-addxp")
+    .setDescription("إضافة اكس بي")
+    .addUserOption(o =>
+      o.setName("user")
+        .setDescription("المستخدم")
+        .setRequired(true)
     )
-    .addStringOption(o =>
-      o.setName("type")
-        .setDescription("day / week")
-        .addChoices(
-          { name: "day", value: "day" },
-          { name: "week", value: "week" }
-        )
-    ),
-
-  new SlashCommandBuilder().setName("top").setDescription("توب 10 كلي"),
-  new SlashCommandBuilder().setName("topweek").setDescription("توب أسبوعي"),
-  new SlashCommandBuilder().setName("help").setDescription("عرض الأوامر"),
-
-  new SlashCommandBuilder()
-    .setName("setlevelchannel")
-    .setDescription("تحديد روم التبريكات")
-    .addChannelOption(o =>
-      o.setName("channel").setDescription("اختر روم").setRequired(true))
-    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
-
-  new SlashCommandBuilder()
-    .setName("setlevelmsg")
-    .setDescription("تغيير رسالة التبريك")
-    .addStringOption(o =>
-      o.setName("message").setDescription("استخدم {user} و {level}").setRequired(true))
-    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
-
-  new SlashCommandBuilder()
-    .setName("setlevelrole")
-    .setDescription("تحديد رتبة لفل معين")
     .addIntegerOption(o =>
-      o.setName("level").setDescription("رقم اللفل").setRequired(true))
-    .addRoleOption(o =>
-      o.setName("role").setDescription("اختر رتبة").setRequired(true))
-    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
+      o.setName("amount")
+        .setDescription("الكمية")
+        .setRequired(true)
+    )
 ].map(c => c.toJSON());
 
-// ================= REGISTER & DELETE OLD =================
-const rest = new REST({ version: "10" }).setToken(TOKEN);
-
+//////////////////////
+// REGISTER COMMANDS
+//////////////////////
 client.once("ready", async () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
+  const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
 
-  // حذف الأوامر القديمة
-  await rest.put(Routes.applicationCommands(CLIENT_ID), { body: [] });
+  await rest.put(
+    Routes.applicationCommands(process.env.CLIENT_ID),
+    { body: commands }
+  );
 
-  // تسجيل الجديدة
-  await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+  console.log("🔥 TR10 READY");
 });
 
-// ================= INTERACTION =================
+//////////////////////
+// INTERACTIONS
+//////////////////////
 client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
-  await interaction.deferReply();
-
-  const guildId = interaction.guild.id;
-  const user = getUser(guildId, interaction.user.id);
+  const guild = interaction.guild.id;
+  const user = interaction.user.id;
+  const data = getUser(guild, user);
 
   if (interaction.commandName === "xp") {
-    const mode = interaction.options.getString("mode");
-    const type = interaction.options.getString("type");
-
-    let text = user.text;
-    let voice = user.voice;
-
-    if (type === "day") {
-      text = user.dailyText;
-      voice = user.dailyVoice;
-    }
-    if (type === "week") {
-      text = user.weeklyText;
-      voice = user.weeklyVoice;
-    }
-
-    if (mode === "v") return interaction.editReply(`🎙️ Voice XP: ${voice}`);
-    if (mode === "t") return interaction.editReply(`💬 Text XP: ${text}`);
-
-    return interaction.editReply(
-      `📊 Text: ${text}\n🎙️ Voice: ${voice}\n🏅 Level: ${user.level}`
-    );
+    return interaction.reply({
+      content:
+        `📊 XP الكلي: ${data.text + data.voice}\n` +
+        `💬 دردشة: ${data.text}\n` +
+        `🎤 صوتي: ${data.voice}\n` +
+        `📅 يومي: ${data.daily}\n` +
+        `📆 أسبوعي: ${data.weekly}\n` +
+        `⭐ لفل: ${data.level}`,
+      ephemeral: true
+    });
   }
 
   if (interaction.commandName === "top") {
-    const users = db.users[guildId] || {};
-    const sorted = Object.entries(users)
-      .sort((a, b) => (b[1].text + b[1].voice) - (a[1].text + a[1].voice))
+    const users = Object.entries(db[guild] || {})
+      .sort((a, b) =>
+        (b[1].text + b[1].voice) - (a[1].text + a[1].voice)
+      )
       .slice(0, 10);
 
-    let msg = "🏆 Top 10\n\n";
-    sorted.forEach((u, i) => {
-      msg += `${i + 1}. <@${u[0]}> - ${u[1].text + u[1].voice}\n`;
+    let text = "🏆 توب 10:\n";
+    users.forEach((u, i) => {
+      text += `${i + 1}- <@${u[0]}> | ${u[1].text + u[1].voice}\n`;
     });
 
-    return interaction.editReply(msg);
+    return interaction.reply({ content: text });
   }
 
   if (interaction.commandName === "topweek") {
-    const users = db.users[guildId] || {};
-    const sorted = Object.entries(users)
-      .sort((a, b) => (b[1].weeklyText + b[1].weeklyVoice) - (a[1].weeklyText + a[1].weeklyVoice))
+    const users = Object.entries(db[guild] || {})
+      .sort((a, b) => b[1].weekly - a[1].weekly)
       .slice(0, 10);
 
-    let msg = "🏆 Top Weekly\n\n";
-    sorted.forEach((u, i) => {
-      msg += `${i + 1}. <@${u[0]}> - ${u[1].weeklyText + u[1].weeklyVoice}\n`;
+    let text = "📆 توب أسبوعي:\n";
+    users.forEach((u, i) => {
+      text += `${i + 1}- <@${u[0]}> | ${u[1].weekly}\n`;
     });
 
-    return interaction.editReply(msg);
+    return interaction.reply({ content: text });
+  }
+
+  if (interaction.commandName === "قفل") {
+    await interaction.channel.permissionOverwrites.edit(
+      interaction.guild.roles.everyone,
+      { SendMessages: false }
+    );
+    return interaction.reply("🔒 تم قفل الروم");
+  }
+
+  if (interaction.commandName === "فتح") {
+    await interaction.channel.permissionOverwrites.edit(
+      interaction.guild.roles.everyone,
+      { SendMessages: true }
+    );
+    return interaction.reply("🔓 تم فتح الروم");
   }
 
   if (interaction.commandName === "help") {
-    return interaction.editReply(`
-📘 أوامر البوت
+    return interaction.reply({
+      content:
+        "📜 الأوامر:\n" +
+        "/xp\n/top\n/topweek\n/قفل\n/فتح\n/owner-addxp",
+      ephemeral: true
+    });
+  }
 
-/xp
-/top
-/topweek
-/setlevelchannel
-/setlevelmsg
-/setlevelrole
-!help
-`);
+  if (interaction.commandName === "owner-addxp") {
+    if (interaction.user.id !== "910264482444480562")
+      return interaction.reply({ content: "❌ ليس لك", ephemeral: true });
+
+    const target = interaction.options.getUser("user");
+    const amount = interaction.options.getInteger("amount");
+
+    const targetData = getUser(guild, target.id);
+    targetData.text += amount;
+    save();
+
+    return interaction.reply("✅ تم إضافة XP");
   }
 });
 
-client.login(TOKEN);
+//////////////////////
+// LOGIN
+//////////////////////
+client.login(process.env.TOKEN);
