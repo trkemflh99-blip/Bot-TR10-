@@ -1,18 +1,7 @@
-/**
- * Bot ~ TR10 (Single-file version)
- * - Discord.js v14
- * - SQLite (sqlite3 + sqlite)
- * - Text XP + Voice XP
- * - Daily reset 1:00 AM (Saudi) / Weekly reset Saturday 11:00 PM (Saudi)
- * - /top (كتابي/صوتي/الكل) + /rank
- * - /قفل /فتح (للروم الحالي)
- * - Congrats channel + message template
- * - Level roles
- * - Owner commands (secret)
- * - /help + !help
- * - Auto replies
- * - KeepAlive Web (Express)
- */
+// ==================================================
+// 🔥 TR10 NUCLEAR ULTIMATE
+// PART 1 — CORE + DATABASE + LEVEL SYSTEM
+// ==================================================
 
 const {
   Client,
@@ -27,25 +16,22 @@ const {
 
 const express = require("express");
 const cron = require("node-cron");
-
 const sqlite3 = require("sqlite3");
 const { open } = require("sqlite");
 
-// ===================== ENV =====================
-const TOKEN = process.env.TOKEN;         // Bot Token
-const CLIENT_ID = process.env.CLIENT_ID; // Application ID
-const GUILD_ID = process.env.GUILD_ID;   // (اختياري) سيرفرك لتسجيل أوامر بسرعة
-const OWNER_ID = process.env.OWNER_ID || "910264482444480562"; // ايديك
-
-const PORT = process.env.PORT || 3000;
+// ================== ENV ==================
+const TOKEN = process.env.TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID;
+const OWNER_ID = process.env.OWNER_ID; // حط ايديك في المتغيرات
 const TZ = "Asia/Riyadh";
+const PORT = process.env.PORT || 3000;
 
-// ===================== KEEP ALIVE WEB =====================
+// ================== WEB KEEP ALIVE ==================
 const app = express();
-app.get("/", (req, res) => res.send("Bot is Alive 👑"));
-app.listen(PORT, () => console.log("Web server running on", PORT));
+app.get("/", (req, res) => res.send("🔥 TR10 NUCLEAR ONLINE 🔥"));
+app.listen(PORT);
 
-// ===================== DISCORD CLIENT =====================
+// ================== CLIENT ==================
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -54,830 +40,533 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildVoiceStates,
   ],
-  partials: [Partials.Channel, Partials.GuildMember, Partials.User],
+  partials: [Partials.Channel],
 });
 
-// ===================== DATABASE =====================
+// ================== DATABASE ==================
 let db;
 
 async function initDB() {
   db = await open({
-    filename: "./data.sqlite",
+    filename: "./nuclear.sqlite",
     driver: sqlite3.Database,
   });
 
   await db.exec(`
-    PRAGMA journal_mode = WAL;
-
     CREATE TABLE IF NOT EXISTS users (
-      guild_id TEXT NOT NULL,
-      user_id  TEXT NOT NULL,
-
-      text_total   INTEGER NOT NULL DEFAULT 0,
-      voice_total  INTEGER NOT NULL DEFAULT 0,
-
-      text_day     INTEGER NOT NULL DEFAULT 0,
-      voice_day    INTEGER NOT NULL DEFAULT 0,
-
-      text_week    INTEGER NOT NULL DEFAULT 0,
-      voice_week   INTEGER NOT NULL DEFAULT 0,
-
-      level        INTEGER NOT NULL DEFAULT 0,
-
-      msg_bucket   INTEGER NOT NULL DEFAULT 0,
-
+      guild_id TEXT,
+      user_id TEXT,
+      text_total INTEGER DEFAULT 0,
+      voice_total INTEGER DEFAULT 0,
+      text_day INTEGER DEFAULT 0,
+      voice_day INTEGER DEFAULT 0,
+      text_week INTEGER DEFAULT 0,
+      voice_week INTEGER DEFAULT 0,
+      level INTEGER DEFAULT 0,
+      msg_bucket INTEGER DEFAULT 0,
       PRIMARY KEY (guild_id, user_id)
     );
 
     CREATE TABLE IF NOT EXISTS settings (
       guild_id TEXT PRIMARY KEY,
       congrats_channel TEXT,
-      congrats_message TEXT,
-      prefix TEXT DEFAULT '!',
-      allow_autoreply INTEGER DEFAULT 1
+      congrats_message TEXT
     );
 
     CREATE TABLE IF NOT EXISTS level_roles (
-      guild_id TEXT NOT NULL,
-      level INTEGER NOT NULL,
-      role_id TEXT NOT NULL,
+      guild_id TEXT,
+      level INTEGER,
+      role_id TEXT,
       PRIMARY KEY (guild_id, level)
-    );
-
-    CREATE TABLE IF NOT EXISTS autoreplies (
-      guild_id TEXT NOT NULL,
-      trigger TEXT NOT NULL,
-      response TEXT NOT NULL,
-      PRIMARY KEY (guild_id, trigger)
     );
   `);
 }
 
-async function ensureUser(guildId, userId) {
+async function ensureUser(gid, uid) {
   await db.run(
     `INSERT OR IGNORE INTO users (guild_id, user_id) VALUES (?, ?)`,
-    [guildId, userId]
+    [gid, uid]
   );
-  return db.get(`SELECT * FROM users WHERE guild_id=? AND user_id=?`, [
-    guildId,
-    userId,
-  ]);
+  return db.get(`SELECT * FROM users WHERE guild_id=? AND user_id=?`, [gid, uid]);
 }
 
-async function ensureSettings(guildId) {
-  await db.run(`INSERT OR IGNORE INTO settings (guild_id) VALUES (?)`, [guildId]);
-  return db.get(`SELECT * FROM settings WHERE guild_id=?`, [guildId]);
+// ================== LEVEL SYSTEM ==================
+function requiredXP(level) {
+  return 200 + (level * 80) + Math.floor(level * level * 10);
 }
 
-// ===================== LEVEL SYSTEM =====================
-// Level based on TOTAL XP = text_total + voice_total
-// Required XP grows gradually (ProBot-ish feel).
-function requiredForNextLevel(level) {
-  // level 0 -> 1 needs about 200 total
-  // grows by +75 each level, plus small curve
-  return 200 + (level * 75) + Math.floor(level * level * 8);
-}
+async function checkLevel(guild, member) {
+  const row = await ensureUser(guild.id, member.id);
+  let total = row.text_total + row.voice_total;
+  let newLevel = row.level;
 
-function calcTotalXPRow(row) {
-  return (row?.text_total || 0) + (row?.voice_total || 0);
-}
+  while (total >= requiredXP(newLevel)) newLevel++;
 
-async function checkLevelUp(guild, member, rowBefore) {
-  const beforeLevel = rowBefore.level || 0;
-  let row = await db.get(`SELECT * FROM users WHERE guild_id=? AND user_id=?`, [
-    guild.id, member.id,
-  ]);
+  if (newLevel > row.level) {
+    await db.run(
+      `UPDATE users SET level=? WHERE guild_id=? AND user_id=?`,
+      [newLevel, guild.id, member.id]
+    );
 
-  let level = row.level || 0;
-  let total = calcTotalXPRow(row);
-
-  let leveledUp = false;
-
-  while (total >= requiredForNextLevel(level)) {
-    level++;
-    leveledUp = true;
-  }
-
-  if (leveledUp) {
-    await db.run(`UPDATE users SET level=? WHERE guild_id=? AND user_id=?`, [
-      level, guild.id, member.id,
-    ]);
-
-    // give level roles (if set)
     const roles = await db.all(
       `SELECT level, role_id FROM level_roles WHERE guild_id=?`,
       [guild.id]
     );
 
-    const toGive = roles.filter(r => (r.level || 0) <= level);
-    for (const r of toGive) {
-      const role = guild.roles.cache.get(r.role_id);
-      if (role) {
-        // add role if not present
-        if (!member.roles.cache.has(role.id)) {
-          await member.roles.add(role.id).catch(() => {});
+    for (const r of roles) {
+      if (newLevel >= r.level) {
+        const role = guild.roles.cache.get(r.role_id);
+        if (role && !member.roles.cache.has(role.id)) {
+          await member.roles.add(role).catch(() => {});
         }
       }
     }
 
-    // congrats message
-    const settings = await ensureSettings(guild.id);
-    if (settings.congrats_channel) {
+    const settings = await db.get(
+      `SELECT * FROM settings WHERE guild_id=?`,
+      [guild.id]
+    );
+
+    if (settings?.congrats_channel) {
       const ch = guild.channels.cache.get(settings.congrats_channel);
       if (ch) {
-        const msgTemplate =
-          settings.congrats_message ||
-          "🎉 مبروك {user}! وصلت لفل **{level}** 👑";
-
-        const out = msgTemplate
-          .replaceAll("{user}", `<@${member.id}>`)
-          .replaceAll("{level}", String(level));
-
-        ch.send({ content: out }).catch(() => {});
+        const msg =
+          (settings.congrats_message || "🎉 مبروك {user} وصلت لفل {level}")
+            .replaceAll("{user}", `<@${member.id}>`)
+            .replaceAll("{level}", newLevel);
+        ch.send(msg).catch(() => {});
       }
     }
   }
-
-  return { beforeLevel, afterLevel: level };
 }
 
-// ===================== XP ADDERS =====================
-async function addTextXP(guildId, userId, amount) {
-  const row = await ensureUser(guildId, userId);
+// ==================================================
+// 🔥 XP SYSTEM
+// ==================================================
+
+// كل 5 رسائل = 3 XP كتابي
+client.on("messageCreate", async (msg) => {
+  if (!msg.guild || msg.author.bot) return;
+
+  const row = await ensureUser(msg.guild.id, msg.author.id);
+  const bucket = row.msg_bucket + 1;
+
   await db.run(
-    `UPDATE users
-     SET text_total = text_total + ?,
-         text_day   = text_day   + ?,
-         text_week  = text_week  + ?
-     WHERE guild_id=? AND user_id=?`,
-    [amount, amount, amount, guildId, userId]
+    `UPDATE users SET msg_bucket=? WHERE guild_id=? AND user_id=?`,
+    [bucket, msg.guild.id, msg.author.id]
   );
-  return row;
-}
 
-async function addVoiceXP(guildId, userId, amount) {
-  const row = await ensureUser(guildId, userId);
-  await db.run(
-    `UPDATE users
-     SET voice_total = voice_total + ?,
-         voice_day   = voice_day   + ?,
-         voice_week  = voice_week  + ?
-     WHERE guild_id=? AND user_id=?`,
-    [amount, amount, amount, guildId, userId]
-  );
-  return row;
-}
+  if (bucket >= 5) {
+    await db.run(
+      `UPDATE users
+       SET msg_bucket=0,
+           text_total=text_total+3,
+           text_day=text_day+3,
+           text_week=text_week+3
+       WHERE guild_id=? AND user_id=?`,
+      [msg.guild.id, msg.author.id]
+    );
 
-// ===================== VOICE TRACKER =====================
-// Every 5 minutes: +10 voice xp to everyone in any voice channel (mute/deaf doesn't matter)
+    const member = await msg.guild.members.fetch(msg.author.id);
+    await checkLevel(msg.guild, member);
+  }
+});
+
+// كل 5 دقائق = 10 XP صوتي (حتى لو المايك مقفل)
 async function voiceTick() {
   for (const guild of client.guilds.cache.values()) {
-    // iterate members in voice channels
     guild.channels.cache.forEach(async (ch) => {
       if (!ch.isVoiceBased()) return;
-      // for each member in channel
-      for (const [memberId, member] of ch.members) {
+
+      for (const [id, member] of ch.members) {
         if (member.user.bot) continue;
 
-        const before = await ensureUser(guild.id, memberId);
-        await addVoiceXP(guild.id, memberId, 10);
+        await ensureUser(guild.id, id);
 
-        // level up check
-        await checkLevelUp(guild, member, before);
+        await db.run(
+          `UPDATE users
+           SET voice_total=voice_total+10,
+               voice_day=voice_day+10,
+               voice_week=voice_week+10
+           WHERE guild_id=? AND user_id=?`,
+          [guild.id, id]
+        );
+
+        await checkLevel(guild, member);
       }
     });
   }
 }
 
-// ===================== DAILY / WEEKLY RESET =====================
-async function dailyReset() {
-  for (const g of client.guilds.cache.values()) {
-    await db.run(
-      `UPDATE users SET text_day=0, voice_day=0 WHERE guild_id=?`,
-      [g.id]
-    );
-  }
-  console.log("[RESET] Daily reset done.");
-}
+setInterval(voiceTick, 5 * 60 * 1000);
 
-async function weeklyReset() {
-  for (const g of client.guilds.cache.values()) {
-    await db.run(
-      `UPDATE users SET text_week=0, voice_week=0 WHERE guild_id=?`,
-      [g.id]
-    );
-  }
-  console.log("[RESET] Weekly reset done.");
-}
+// ==================================================
+// 🔥 RESET SYSTEM (سعودي)
+// ==================================================
 
-// ===================== COMMANDS (SLASH) =====================
-function buildCommands() {
-  const commands = [];
+cron.schedule("0 1 * * *", async () => {
+  await db.run(`UPDATE users SET text_day=0, voice_day=0`);
+}, { timezone: TZ });
 
-  // /help
-  commands.push(
-    new SlashCommandBuilder()
-      .setName("help")
-      .setDescription("شرح جميع الأوامر")
-  );
+cron.schedule("0 23 * * 6", async () => {
+  await db.run(`UPDATE users SET text_week=0, voice_week=0`);
+}, { timezone: TZ });
 
-  // /rank
-  commands.push(
-    new SlashCommandBuilder()
-      .setName("rank")
-      .setDescription("يعرض رتبتك و XP واللفل")
-      .addUserOption(o =>
-        o.setName("user").setDescription("اختياري: عضو آخر").setRequired(false)
-      )
-  );
-
-  // /top
-  commands.push(
-    new SlashCommandBuilder()
-      .setName("top")
-      .setDescription("التوب - (كتابي / صوتي / الكل)")
-      .addStringOption(o =>
-        o.setName("type")
-          .setDescription("اختر نوع التوب")
-          .setRequired(true)
-          .addChoices(
-            { name: "كتابي", value: "text" },
-            { name: "صوتي", value: "voice" },
-            { name: "الكل", value: "all" },
-          )
-      )
-  );
-
-  // /قفل
-  commands.push(
-    new SlashCommandBuilder()
-      .setName("قفل")
-      .setDescription("يقفل الروم الحالي (للمود/الادمن)")
-  );
-
-  // /فتح
-  commands.push(
-    new SlashCommandBuilder()
-      .setName("فتح")
-      .setDescription("يفتح الروم الحالي (للمود/الادمن)")
-  );
-
-  // /autoreply-add
-  commands.push(
-    new SlashCommandBuilder()
-      .setName("autoreply-add")
-      .setDescription("إضافة رد تلقائي (trigger => response)")
-      .addStringOption(o => o.setName("trigger").setDescription("الكلمة/الجملة").setRequired(true))
-      .addStringOption(o => o.setName("response").setDescription("الرد").setRequired(true))
-  );
-
-  // /autoreply-remove
-  commands.push(
-    new SlashCommandBuilder()
-      .setName("autoreply-remove")
-      .setDescription("حذف رد تلقائي")
-      .addStringOption(o => o.setName("trigger").setDescription("الكلمة/الجملة").setRequired(true))
-  );
-
-  // ================= OWNER (secret) =================
-  commands.push(
-    new SlashCommandBuilder()
-      .setName("owner-setcongrats")
-      .setDescription(" (أونر) تحديد روم التبريكات")
-      .addChannelOption(o => o.setName("channel").setDescription("الروم").setRequired(true))
-  );
-
-  commands.push(
-    new SlashCommandBuilder()
-      .setName("owner-setcongratsmsg")
-      .setDescription(" (أونر) تحديد رسالة التبريكات {user} {level}")
-      .addStringOption(o => o.setName("message").setDescription("الرسالة").setRequired(true))
-  );
-
-  commands.push(
-    new SlashCommandBuilder()
-      .setName("owner-setlevelrole")
-      .setDescription("(أونر) ربط رتبة بلفل معيّن")
-      .addIntegerOption(o => o.setName("level").setDescription("اللفل").setRequired(true))
-      .addRoleOption(o => o.setName("role").setDescription("الرتبة").setRequired(true))
-  );
-
-  commands.push(
-    new SlashCommandBuilder()
-      .setName("owner-addxp")
-      .setDescription("(أونر) إضافة XP لعضو")
-      .addUserOption(o => o.setName("user").setDescription("العضو").setRequired(true))
-      .addIntegerOption(o => o.setName("amount").setDescription("الكمية").setRequired(true))
-      .addStringOption(o =>
-        o.setName("type")
-          .setDescription("نوع الإضافة")
-          .setRequired(true)
-          .addChoices(
-            { name: "كتابي", value: "text" },
-            { name: "صوتي", value: "voice" },
-            { name: "الكل", value: "all" }
-          )
-      )
-  );
-
-  commands.push(
-    new SlashCommandBuilder()
-      .setName("owner-reset")
-      .setDescription("(أونر) تصفير عضو (يومي/أسبوعي/كلي)")
-      .addUserOption(o => o.setName("user").setDescription("العضو").setRequired(true))
-      .addStringOption(o =>
-        o.setName("scope")
-          .setDescription("نطاق التصفير")
-          .setRequired(true)
-          .addChoices(
-            { name: "اليومي", value: "day" },
-            { name: "الأسبوعي", value: "week" },
-            { name: "الكلي", value: "all" }
-          )
-      )
-  );
-
-  commands.push(
-    new SlashCommandBuilder()
-      .setName("owner-sync")
-      .setDescription("(أونر) حذف أوامر البوت القديمة وتسجيل أوامر جديدة (لهذا السيرفر)")
-  );
-
-  return commands.map(c => c.toJSON());
-}
-
-async function registerCommands() {
-  if (!CLIENT_ID || !TOKEN) {
-    console.log("Missing CLIENT_ID or TOKEN env.");
-    return;
-  }
-
-  const rest = new REST({ version: "10" }).setToken(TOKEN);
-  const commands = buildCommands();
-
-  try {
-    if (GUILD_ID) {
-      // Fast update (recommended)
-      await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
-      console.log("✅ Registered GUILD commands:", GUILD_ID);
-    } else {
-      // Global (takes time to appear)
-      await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
-      console.log("✅ Registered GLOBAL commands.");
-    }
-  } catch (e) {
-    console.error("Command register error:", e);
-  }
-}
-
-// ===================== HELP TEXT =====================
-function helpText(prefix = "!") {
-  return [
-    "👑 **Bot ~ TR10 | Help**",
-    "",
-    "## ✅ XP / لفلات",
-    `- \`${prefix}xp\` : يعرض **الكل** (كتابي+صوتي)`,
-    `- \`${prefix}t day|week|all\` : XP **كتابي**`,
-    `- \`${prefix}v day|week|all\` : XP **صوتي**`,
-    `- \`/rank\` : رانك احترافي`,
-    `- \`/top\` : التوب (كتابي/صوتي/الكل)`,
-    "",
-    "## ⏱️ التصفير التلقائي",
-    "- يومي: **1:00 AM** (السعودية)",
-    "- أسبوعي: **كل سبت 11:00 PM** (السعودية)",
-    "",
-    "## 🔒 إدارة الرومات",
-    "- /قفل : يقفل الروم الحالي",
-    "- /فتح : يفتح الروم الحالي",
-    "",
-    "## 🎉 التبريكات والرتب (أونر فقط)",
-    "- /owner-setcongrats (تحديد روم التبريكات)",
-    "- /owner-setcongratsmsg (رسالة التبريك: {user} {level})",
-    "- /owner-setlevelrole (رتبة عند لفل معين)",
-    "",
-    "## 🤖 ردود تلقائية",
-    "- /autoreply-add (إضافة رد تلقائي)",
-    "- /autoreply-remove (حذف رد تلقائي)",
-    "",
-    "## 🛡️ أوامر الأونر السرية",
-    "- /owner-addxp (إضافة XP)",
-    "- /owner-reset (تصفير عضو)",
-    "- /owner-sync (يحذف أوامر البوت القديمة ويسجل الجديدة للسيرفر)",
-  ].join("\n");
-}
-
-// ===================== PREFIX COMMANDS =====================
-async function handlePrefixCommand(message, settings) {
-  const prefix = settings?.prefix || "!";
-  if (!message.content.startsWith(prefix)) return;
-
-  const args = message.content.slice(prefix.length).trim().split(/\s+/);
-  const cmd = (args.shift() || "").toLowerCase();
-
-  const guildId = message.guild.id;
-  const userId = message.author.id;
-
-  // !help
-  if (cmd === "help") {
-    return message.reply({ content: helpText(prefix) }).catch(() => {});
-  }
-
-  // !xp (all)
-  if (cmd === "xp") {
-    const row = await ensureUser(guildId, userId);
-    const total = calcTotalXPRow(row);
-    const embed = new EmbedBuilder()
-      .setTitle("📌 XP | الكل")
-      .setDescription(
-        [
-          `👤 <@${userId}>`,
-          `**Text XP:** ${row.text_total}`,
-          `**Voice XP:** ${row.voice_total}`,
-          `**Total:** ${total}`,
-          `**Level:** ${row.level}`,
-          `**Next Level:** ${requiredForNextLevel(row.level)}`,
-        ].join("\n")
-      );
-    return message.reply({ embeds: [embed] }).catch(() => {});
-  }
-
-  // !t day|week|all
-  if (cmd === "t" || cmd === "text") {
-    const scope = (args[0] || "all").toLowerCase();
-    const row = await ensureUser(guildId, userId);
-
-    let val = row.text_total;
-    let title = "كتابي | الكلي";
-    if (scope === "day") { val = row.text_day; title = "كتابي | اليومي"; }
-    if (scope === "week") { val = row.text_week; title = "كتابي | الأسبوعي"; }
-
-    const embed = new EmbedBuilder()
-      .setTitle(`📝 XP | ${title}`)
-      .setDescription(`👤 <@${userId}>\n**XP:** ${val}\n**Level:** ${row.level}`);
-    return message.reply({ embeds: [embed] }).catch(() => {});
-  }
-
-  // !v day|week|all
-  if (cmd === "v" || cmd === "voice") {
-    const scope = (args[0] || "all").toLowerCase();
-    const row = await ensureUser(guildId, userId);
-
-    let val = row.voice_total;
-    let title = "صوتي | الكلي";
-    if (scope === "day") { val = row.voice_day; title = "صوتي | اليومي"; }
-    if (scope === "week") { val = row.voice_week; title = "صوتي | الأسبوعي"; }
-
-    const embed = new EmbedBuilder()
-      .setTitle(`🎙️ XP | ${title}`)
-      .setDescription(`👤 <@${userId}>\n**XP:** ${val}\n**Level:** ${row.level}`);
-    return message.reply({ embeds: [embed] }).catch(() => {});
-  }
-}
-
-// ===================== SLASH HANDLERS =====================
-function isOwner(userId) {
-  return String(userId) === String(OWNER_ID);
-}
-
-async function handleSlash(interaction) {
-  if (!interaction.guild) return;
-
-  const guild = interaction.guild;
-  const guildId = guild.id;
-
-  const settings = await ensureSettings(guildId);
-
-  if (interaction.commandName === "help") {
-    return interaction.reply({ content: helpText(settings.prefix || "!"), ephemeral: true });
-  }
-
-  if (interaction.commandName === "rank") {
-    const target = interaction.options.getUser("user") || interaction.user;
-    const row = await ensureUser(guildId, target.id);
-
-    const total = calcTotalXPRow(row);
-    const next = requiredForNextLevel(row.level);
-    const need = Math.max(0, next - total);
-
-    const embed = new EmbedBuilder()
-      .setTitle("👑 Rank")
-      .setDescription(
-        [
-          `👤 ${target}`,
-          `**Level:** ${row.level}`,
-          `**Total XP:** ${total}`,
-          "",
-          `📝 **Text:** ${row.text_total} (Day: ${row.text_day} | Week: ${row.text_week})`,
-          `🎙️ **Voice:** ${row.voice_total} (Day: ${row.voice_day} | Week: ${row.voice_week})`,
-          "",
-          `➡️ **Next Level XP:** ${next}`,
-          `⏳ **Remaining:** ${need}`,
-        ].join("\n")
-      );
-
-    return interaction.reply({ embeds: [embed] });
-  }
-
-  if (interaction.commandName === "top") {
-    const type = interaction.options.getString("type");
-    let rows;
-
-    if (type === "text") {
-      rows = await db.all(
-        `SELECT user_id, text_total as v, level FROM users WHERE guild_id=? ORDER BY text_total DESC LIMIT 10`,
-        [guildId]
-      );
-    } else if (type === "voice") {
-      rows = await db.all(
-        `SELECT user_id, voice_total as v, level FROM users WHERE guild_id=? ORDER BY voice_total DESC LIMIT 10`,
-        [guildId]
-      );
-    } else {
-      rows = await db.all(
-        `SELECT user_id, (text_total + voice_total) as v, level FROM users WHERE guild_id=? ORDER BY (text_total + voice_total) DESC LIMIT 10`,
-        [guildId]
-      );
-    }
-
-    const title =
-      type === "text" ? "🏆 توب 10 | كتابي" : type === "voice" ? "🏆 توب 10 | صوتي" : "🏆 توب 10 | الكل";
-
-    const lines = rows.map((r, i) => {
-      const mention = `<@${r.user_id}>`;
-      return `**${i + 1}-** ${mention}\n> **XP:** ${r.v} | **Level:** ${r.level}\n`;
-    });
-
-    const embed = new EmbedBuilder()
-      .setTitle(title)
-      .setDescription(lines.join("\n") || "ما فيه بيانات لسه.");
-
-    return interaction.reply({ embeds: [embed] });
-  }
-
-  if (interaction.commandName === "قفل") {
-    const ch = interaction.channel;
-    if (!ch) return;
-
-    // permissions
-    const member = await guild.members.fetch(interaction.user.id).catch(() => null);
-    const ok =
-      member &&
-      (member.permissions.has(PermissionsBitField.Flags.ManageChannels) ||
-        member.permissions.has(PermissionsBitField.Flags.Administrator) ||
-        isOwner(interaction.user.id));
-
-    if (!ok) return interaction.reply({ content: "❌ ما عندك صلاحية.", ephemeral: true });
-
-    await ch.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: false }).catch(() => {});
-    return interaction.reply({ content: `🔒 تم قفل الروم: ${ch}` });
-  }
-
-  if (interaction.commandName === "فتح") {
-    const ch = interaction.channel;
-    if (!ch) return;
-
-    const member = await guild.members.fetch(interaction.user.id).catch(() => null);
-    const ok =
-      member &&
-      (member.permissions.has(PermissionsBitField.Flags.ManageChannels) ||
-        member.permissions.has(PermissionsBitField.Flags.Administrator) ||
-        isOwner(interaction.user.id));
-
-    if (!ok) return interaction.reply({ content: "❌ ما عندك صلاحية.", ephemeral: true });
-
-    await ch.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: true }).catch(() => {});
-    return interaction.reply({ content: `🔓 تم فتح الروم: ${ch}` });
-  }
-
-  // autoreplies
-  if (interaction.commandName === "autoreply-add") {
-    const member = await guild.members.fetch(interaction.user.id).catch(() => null);
-    const ok =
-      member &&
-      (member.permissions.has(PermissionsBitField.Flags.ManageGuild) ||
-        member.permissions.has(PermissionsBitField.Flags.Administrator) ||
-        isOwner(interaction.user.id));
-
-    if (!ok) return interaction.reply({ content: "❌ ما عندك صلاحية.", ephemeral: true });
-
-    const trigger = interaction.options.getString("trigger");
-    const response = interaction.options.getString("response");
-
-    await db.run(
-      `INSERT OR REPLACE INTO autoreplies (guild_id, trigger, response) VALUES (?, ?, ?)`,
-      [guildId, trigger.toLowerCase(), response]
-    );
-
-    return interaction.reply({ content: "✅ تم إضافة الرد التلقائي.", ephemeral: true });
-  }
-
-  if (interaction.commandName === "autoreply-remove") {
-    const member = await guild.members.fetch(interaction.user.id).catch(() => null);
-    const ok =
-      member &&
-      (member.permissions.has(PermissionsBitField.Flags.ManageGuild) ||
-        member.permissions.has(PermissionsBitField.Flags.Administrator) ||
-        isOwner(interaction.user.id));
-
-    if (!ok) return interaction.reply({ content: "❌ ما عندك صلاحية.", ephemeral: true });
-
-    const trigger = interaction.options.getString("trigger").toLowerCase();
-    await db.run(`DELETE FROM autoreplies WHERE guild_id=? AND trigger=?`, [guildId, trigger]);
-
-    return interaction.reply({ content: "✅ تم حذف الرد التلقائي.", ephemeral: true });
-  }
-
-  // ================= OWNER =================
-  if (interaction.commandName.startsWith("owner-")) {
-    if (!isOwner(interaction.user.id)) {
-      return interaction.reply({ content: "❌ هذا الأمر للأونر فقط.", ephemeral: true });
-    }
-
-    if (interaction.commandName === "owner-setcongrats") {
-      const ch = interaction.options.getChannel("channel");
-      await db.run(`UPDATE settings SET congrats_channel=? WHERE guild_id=?`, [ch.id, guildId]);
-      return interaction.reply({ content: `✅ تم تحديد روم التبريكات: ${ch}`, ephemeral: true });
-    }
-
-    if (interaction.commandName === "owner-setcongratsmsg") {
-      const msg = interaction.options.getString("message");
-      await db.run(`UPDATE settings SET congrats_message=? WHERE guild_id=?`, [msg, guildId]);
-      return interaction.reply({ content: "✅ تم حفظ رسالة التبريكات.", ephemeral: true });
-    }
-
-    if (interaction.commandName === "owner-setlevelrole") {
-      const lvl = interaction.options.getInteger("level");
-      const role = interaction.options.getRole("role");
-      await db.run(
-        `INSERT OR REPLACE INTO level_roles (guild_id, level, role_id) VALUES (?, ?, ?)`,
-        [guildId, lvl, role.id]
-      );
-      return interaction.reply({ content: `✅ تم ربط رتبة ${role} بلفل ${lvl}.`, ephemeral: true });
-    }
-
-    if (interaction.commandName === "owner-addxp") {
-      const user = interaction.options.getUser("user");
-      const amount = interaction.options.getInteger("amount");
-      const type = interaction.options.getString("type");
-
-      await ensureUser(guildId, user.id);
-
-      if (type === "text") {
-        await db.run(
-          `UPDATE users SET text_total=text_total+?, text_day=text_day+?, text_week=text_week+? WHERE guild_id=? AND user_id=?`,
-          [amount, amount, amount, guildId, user.id]
-        );
-      } else if (type === "voice") {
-        await db.run(
-          `UPDATE users SET voice_total=voice_total+?, voice_day=voice_day+?, voice_week=voice_week+? WHERE guild_id=? AND user_id=?`,
-          [amount, amount, amount, guildId, user.id]
-        );
-      } else {
-        // all split
-        const half = Math.floor(amount / 2);
-        const rest = amount - half;
-        await db.run(
-          `UPDATE users
-           SET text_total=text_total+?, text_day=text_day+?, text_week=text_week+?,
-               voice_total=voice_total+?, voice_day=voice_day+?, voice_week=voice_week+?
-           WHERE guild_id=? AND user_id=?`,
-          [half, half, half, rest, rest, rest, guildId, user.id]
-        );
-      }
-
-      // try level up
-      const member = await guild.members.fetch(user.id).catch(() => null);
-      if (member) {
-        const before = await ensureUser(guildId, user.id);
-        await checkLevelUp(guild, member, before);
-      }
-
-      return interaction.reply({ content: "✅ تم إضافة XP.", ephemeral: true });
-    }
-
-    if (interaction.commandName === "owner-reset") {
-      const user = interaction.options.getUser("user");
-      const scope = interaction.options.getString("scope");
-      await ensureUser(guildId, user.id);
-
-      if (scope === "day") {
-        await db.run(`UPDATE users SET text_day=0, voice_day=0 WHERE guild_id=? AND user_id=?`, [guildId, user.id]);
-      } else if (scope === "week") {
-        await db.run(`UPDATE users SET text_week=0, voice_week=0 WHERE guild_id=? AND user_id=?`, [guildId, user.id]);
-      } else {
-        await db.run(
-          `UPDATE users
-           SET text_total=0, voice_total=0, text_day=0, voice_day=0, text_week=0, voice_week=0, level=0, msg_bucket=0
-           WHERE guild_id=? AND user_id=?`,
-          [guildId, user.id]
-        );
-      }
-
-      return interaction.reply({ content: "✅ تم التصفير.", ephemeral: true });
-    }
-
-    if (interaction.commandName === "owner-sync") {
-      // overwrite guild commands (deletes old commands of THIS BOT in this guild)
-      const rest = new REST({ version: "10" }).setToken(TOKEN);
-      const commands = buildCommands();
-      await rest.put(Routes.applicationGuildCommands(CLIENT_ID, guildId), { body: commands });
-      return interaction.reply({ content: "✅ تم حذف أوامر البوت القديمة وتسجيل الجديدة للسيرفر.", ephemeral: true });
-    }
-  }
-}
-
-// ===================== MESSAGE XP + AUTOREPLY =====================
-client.on("messageCreate", async (message) => {
-  try {
-    if (!message.guild) return;
-    if (message.author.bot) return;
-
-    const settings = await ensureSettings(message.guild.id);
-
-    // Auto replies
-    if (settings.allow_autoreply) {
-      const content = message.content.trim().toLowerCase();
-      const ar = await db.get(
-        `SELECT response FROM autoreplies WHERE guild_id=? AND trigger=?`,
-        [message.guild.id, content]
-      );
-      if (ar?.response) {
-        message.reply({ content: ar.response }).catch(() => {});
-      }
-    }
-
-    // Prefix commands
-    await handlePrefixCommand(message, settings);
-
-    // TEXT XP rule:
-    // every 5 messages => +3 text xp
-    const row = await ensureUser(message.guild.id, message.author.id);
-
-    const newBucket = (row.msg_bucket || 0) + 1;
-    await db.run(`UPDATE users SET msg_bucket=? WHERE guild_id=? AND user_id=?`, [
-      newBucket,
-      message.guild.id,
-      message.author.id,
-    ]);
-
-    if (newBucket >= 5) {
-      // reset bucket and add XP
-      await db.run(`UPDATE users SET msg_bucket=0 WHERE guild_id=? AND user_id=?`, [
-        message.guild.id,
-        message.author.id,
-      ]);
-
-      const before = await ensureUser(message.guild.id, message.author.id);
-      await addTextXP(message.guild.id, message.author.id, 3);
-
-      const member = await message.guild.members.fetch(message.author.id).catch(() => null);
-      if (member) await checkLevelUp(message.guild, member, before);
-    }
-  } catch (e) {
-    // silent to avoid crash
-    console.error("messageCreate error:", e);
-  }
-});
-
-// ===================== INTERACTIONS =====================
-client.on("interactionCreate", async (interaction) => {
-  try {
-    if (interaction.isChatInputCommand()) {
-      await handleSlash(interaction);
-    }
-  } catch (e) {
-    console.error("interaction error:", e);
-    if (interaction.isRepliable()) {
-      interaction.reply({ content: "⚠️ صار خطأ داخلي.", ephemeral: true }).catch(() => {});
-    }
-  }
-});
-
-// ===================== READY =====================
-client.once("ready", async () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
-
-  // register commands
-  await registerCommands();
-
-  // schedule resets (Saudi time)
-  // daily 1:00 AM
-  cron.schedule("0 1 * * *", () => dailyReset().catch(console.error), { timezone: TZ });
-
-  // weekly Saturday 11:00 PM (Sat = 6)
-  cron.schedule("0 23 * * 6", () => weeklyReset().catch(console.error), { timezone: TZ });
-
-  // voice tick every 5 minutes
-  setInterval(() => voiceTick().catch(console.error), 5 * 60 * 1000);
-});
-
-// ===================== BOOT =====================
+// ==================================================
 (async () => {
   if (!TOKEN || !CLIENT_ID) {
-    console.log("❌ لازم تحط TOKEN و CLIENT_ID في Environment Variables");
+    console.log("❌ حط TOKEN و CLIENT_ID في Environment Variables");
     process.exit(1);
   }
 
   await initDB();
   await client.login(TOKEN);
-})();
+})();// ==================================================
+// 🔥 COMMANDS BUILDER
+// ==================================================
+
+function buildCommands() {
+  return [
+
+    new SlashCommandBuilder()
+      .setName("help")
+      .setDescription("عرض جميع أوامر البوت"),
+
+    new SlashCommandBuilder()
+      .setName("rank")
+      .setDescription("عرض لفلك"),
+
+    new SlashCommandBuilder()
+      .setName("top")
+      .setDescription("التوب")
+      .addStringOption(o =>
+        o.setName("type")
+          .setDescription("نوع التوب")
+          .setRequired(true)
+          .addChoices(
+            { name: "الكل", value: "all" },
+            { name: "كتابي", value: "text" },
+            { name: "صوتي", value: "voice" }
+          )
+      ),
+
+    new SlashCommandBuilder()
+      .setName("set-congrats")
+      .setDescription("تحديد روم التبريكات")
+      .addChannelOption(o =>
+        o.setName("channel").setDescription("الروم").setRequired(true)
+      )
+      .addStringOption(o =>
+        o.setName("message")
+          .setDescription("رسالة التبريك (استخدم {user} و {level})")
+          .setRequired(true)
+      ),
+
+    new SlashCommandBuilder()
+      .setName("set-level-role")
+      .setDescription("ربط رتبة بلفل معين")
+      .addIntegerOption(o =>
+        o.setName("level").setDescription("رقم اللفل").setRequired(true)
+      )
+      .addRoleOption(o =>
+        o.setName("role").setDescription("اختر الرتبة").setRequired(true)
+      ),
+
+    new SlashCommandBuilder()
+      .setName("lock")
+      .setDescription("قفل الروم الحالي"),
+
+    new SlashCommandBuilder()
+      .setName("unlock")
+      .setDescription("فتح الروم الحالي"),
+
+    new SlashCommandBuilder()
+      .setName("owner-reset-user")
+      .setDescription("تصفير عضو كامل (أونر فقط)")
+      .addUserOption(o =>
+        o.setName("user").setDescription("اختر العضو").setRequired(true)
+      ),
+
+    new SlashCommandBuilder()
+      .setName("owner-reset-guild")
+      .setDescription("تصفير السيرفر كامل (أونر فقط)"),
+
+    new SlashCommandBuilder()
+      .setName("owner-sync")
+      .setDescription("حذف الأوامر القديمة وتحديثها (أونر فقط)")
+
+  ].map(c => c.toJSON());
+}
+
+// ==================================================
+// 🔥 REGISTER COMMANDS
+// ==================================================
+
+async function registerCommands() {
+  const rest = new REST({ version: "10" }).setToken(TOKEN);
+
+  await rest.put(
+    Routes.applicationCommands(CLIENT_ID),
+    { body: buildCommands() }
+  );
+
+  console.log("🔥 Global commands registered");
+}
+
+// ==================================================
+// 🔥 INTERACTIONS
+// ==================================================
+
+client.on("interactionCreate", async (i) => {
+  if (!i.isChatInputCommand()) return;
+
+  const gid = i.guild.id;
+
+  // ================= HELP =================
+  if (i.commandName === "help") {
+    return i.reply(`
+🔥 TR10 NUCLEAR 🔥
+
+/rank — عرض لفلك
+/top — عرض التوب
+/lock — قفل الروم
+/unlock — فتح الروم
+/set-congrats — روم تبريك
+/set-level-role — ربط رتبة بلفل
+
+👑 أوامر الأونر:
+owner-reset-user
+owner-reset-guild
+owner-sync
+`);
+  }
+
+  // ================= RANK =================
+  if (i.commandName === "rank") {
+    const row = await ensureUser(gid, i.user.id);
+    return i.reply(`
+👤 <@${i.user.id}>
+📊 لفل: ${row.level}
+💬 كتابي: ${row.text_total}
+🎤 صوتي: ${row.voice_total}
+`);
+  }
+
+  // ================= TOP =================
+  if (i.commandName === "top") {
+    const type = i.options.getString("type");
+
+    let order = "text_total + voice_total";
+    if (type === "text") order = "text_total";
+    if (type === "voice") order = "voice_total";
+
+    const rows = await db.all(
+      `SELECT * FROM users WHERE guild_id=? ORDER BY ${order} DESC LIMIT 10`,
+      [gid]
+    );
+
+    let msg = "🏆 التوب:\n";
+    rows.forEach((r, index) => {
+      msg += `${index + 1}- <@${r.user_id}> | لفل ${r.level}\n`;
+    });
+
+    return i.reply(msg);
+  }
+
+  // ================= LOCK =================
+  if (i.commandName === "lock") {
+    if (!i.member.permissions.has(PermissionsBitField.Flags.ManageChannels))
+      return i.reply({ content: "❌ ماعندك صلاحية", ephemeral: true });
+
+    await i.channel.permissionOverwrites.edit(i.guild.roles.everyone, {
+      SendMessages: false,
+    });
+
+    return i.reply("🔒 تم القفل");
+  }
+
+  // ================= UNLOCK =================
+  if (i.commandName === "unlock") {
+    if (!i.member.permissions.has(PermissionsBitField.Flags.ManageChannels))
+      return i.reply({ content: "❌ ماعندك صلاحية", ephemeral: true });
+
+    await i.channel.permissionOverwrites.edit(i.guild.roles.everyone, {
+      SendMessages: true,
+    });
+
+    return i.reply("🔓 تم الفتح");
+  }
+
+  // ================= SET CONGRATS =================
+  if (i.commandName === "set-congrats") {
+    if (!i.member.permissions.has(PermissionsBitField.Flags.Administrator))
+      return i.reply({ content: "❌ تحتاج ادمن", ephemeral: true });
+
+    const channel = i.options.getChannel("channel");
+    const message = i.options.getString("message");
+
+    await db.run(
+      `INSERT OR REPLACE INTO settings (guild_id, congrats_channel, congrats_message)
+       VALUES (?, ?, ?)`,
+      [gid, channel.id, message]
+    );
+
+    return i.reply("✅ تم تحديد روم التبريك");
+  }
+
+  // ================= SET LEVEL ROLE =================
+  if (i.commandName === "set-level-role") {
+    if (!i.member.permissions.has(PermissionsBitField.Flags.Administrator))
+      return i.reply({ content: "❌ تحتاج ادمن", ephemeral: true });
+
+    const level = i.options.getInteger("level");
+    const role = i.options.getRole("role");
+
+    await db.run(
+      `INSERT OR REPLACE INTO level_roles (guild_id, level, role_id)
+       VALUES (?, ?, ?)`,
+      [gid, level, role.id]
+    );
+
+    return i.reply("🎖 تم ربط الرتبة");
+  }
+
+  // ================= OWNER CHECK =================
+  if (
+    ["owner-reset-user", "owner-reset-guild", "owner-sync"]
+      .includes(i.commandName)
+      && i.user.id !== OWNER_ID
+  ) {
+    return i.reply({ content: "❌ هذا أمر أونر فقط", ephemeral: true });
+  }
+
+  if (i.commandName === "owner-reset-user") {
+    const user = i.options.getUser("user");
+    await db.run(
+      `DELETE FROM users WHERE guild_id=? AND user_id=?`,
+      [gid, user.id]
+    );
+    return i.reply("🧹 تم تصفير العضو");
+  }
+
+  if (i.commandName === "owner-reset-guild") {
+    await db.run(`DELETE FROM users WHERE guild_id=?`, [gid]);
+    return i.reply("💥 تم تصفير السيرفر كامل");
+  }
+
+  if (i.commandName === "owner-sync") {
+    await registerCommands();
+    return i.reply("♻ تم حذف الأوامر القديمة وتحديثها");
+  }
+
+});
+
+// ==================================================
+client.once("ready", async () => {
+  console.log(`🔥 Logged in as ${client.user.tag}`);
+  await registerCommands();
+});// ==================================================
+// 🔥 LEVEL UP SYSTEM + AUTO ROLE + CONGRATS
+// ==================================================
+
+const xpCooldown = new Set();
+const voiceTracker = new Map();
+
+// ============ XP FROM TEXT ============
+client.on("messageCreate", async (msg) => {
+  if (!msg.guild || msg.author.bot) return;
+
+  const key = `${msg.guild.id}-${msg.author.id}`;
+  if (xpCooldown.has(key)) return;
+
+  xpCooldown.add(key);
+  setTimeout(() => xpCooldown.delete(key), 15000);
+
+  const row = await ensureUser(msg.guild.id, msg.author.id);
+
+  let xpGain = 5 + Math.floor(Math.random() * 6);
+  row.text_xp += xpGain;
+  row.text_total += xpGain;
+
+  let needed = row.level * 100;
+
+  if (row.text_xp >= needed) {
+    row.level++;
+    row.text_xp = 0;
+
+    await levelUp(msg.guild, msg.member, row.level);
+  }
+
+  await db.run(
+    `UPDATE users SET level=?, text_xp=?, text_total=? 
+     WHERE guild_id=? AND user_id=?`,
+    [row.level, row.text_xp, row.text_total, msg.guild.id, msg.author.id]
+  );
+});
+
+// ============ XP FROM VOICE ============
+client.on("voiceStateUpdate", async (oldState, newState) => {
+  if (!newState.guild) return;
+
+  const userId = newState.id;
+  const guildId = newState.guild.id;
+
+  if (!oldState.channelId && newState.channelId) {
+    voiceTracker.set(userId, Date.now());
+  }
+
+  if (oldState.channelId && !newState.channelId) {
+    const joinTime = voiceTracker.get(userId);
+    if (!joinTime) return;
+
+    const minutes = Math.floor((Date.now() - joinTime) / 60000);
+    voiceTracker.delete(userId);
+
+    if (minutes < 1) return;
+
+    const row = await ensureUser(guildId, userId);
+
+    let xpGain = minutes * 3;
+    row.voice_total += xpGain;
+
+    await db.run(
+      `UPDATE users SET voice_total=? 
+       WHERE guild_id=? AND user_id=?`,
+      [row.voice_total, guildId, userId]
+    );
+  }
+});
+
+// ============ LEVEL UP FUNCTION ============
+async function levelUp(guild, member, level) {
+
+  // 🎖 اعطاء رتبة
+  const roleRow = await db.get(
+    `SELECT role_id FROM level_roles 
+     WHERE guild_id=? AND level=?`,
+    [guild.id, level]
+  );
+
+  if (roleRow) {
+    const role = guild.roles.cache.get(roleRow.role_id);
+    if (role) await member.roles.add(role).catch(() => {});
+  }
+
+  // 🎉 رسالة تبريك
+  const settings = await db.get(
+    `SELECT congrats_channel, congrats_message 
+     FROM settings WHERE guild_id=?`,
+    [guild.id]
+  );
+
+  if (settings && settings.congrats_channel) {
+    const channel = guild.channels.cache.get(settings.congrats_channel);
+    if (channel) {
+      let msg = settings.congrats_message
+        .replace("{user}", `<@${member.id}>`)
+        .replace("{level}", level);
+
+      channel.send(msg).catch(() => {});
+    }
+  }
+    }
