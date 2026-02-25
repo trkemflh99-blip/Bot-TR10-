@@ -1,7 +1,7 @@
 /**
- * TR10 NUCLEAR - FIXED FULL ONE FILE (NO SYNTAX ERRORS)
- * Discord.js v14 + SQLite
- * Global Slash Commands
+ * TR10 NUCLEAR - ONE FILE (FIXED)
+ * discord.js v14 + sqlite3
+ * Global slash commands
  */
 
 const {
@@ -138,7 +138,7 @@ async function maybeLevelUp(gid, uid) {
     [newLevel, gid, uid]
   );
 
-  // Give linked roles for levels passed
+  // Give roles for levels passed
   for (let lvl = row.level + 1; lvl <= newLevel; lvl++) {
     const lr = await db.get(
       `SELECT role_id FROM level_roles WHERE guild_id = ? AND level = ?`,
@@ -158,7 +158,7 @@ async function maybeLevelUp(gid, uid) {
   try {
     const settings = await ensureSettings(gid);
     if (settings?.congrats_channel_id) {
-      const ch = client.channels.cache.get(settings.congrats_channel_id);
+      const ch = await client.channels.fetch(settings.congrats_channel_id).catch(() => null);
       if (ch && ch.isTextBased()) {
         ch.send(`🎉 <@${uid}> وصلت لفل **${newLevel}**!`).catch(() => {});
       }
@@ -174,7 +174,6 @@ client.on("messageCreate", async (msg) => {
     const gid = msg.guild.id;
     const uid = msg.author.id;
 
-    // AutoReply
     const content = (msg.content || "").trim();
     if (content) {
       const ar = await db.get(
@@ -201,7 +200,7 @@ client.on("messageCreate", async (msg) => {
 });
 
 // ===================== VOICE XP =====================
-const voiceIntervals = new Map(); // key => interval id
+const voiceIntervals = new Map();
 
 function vKey(gid, uid) {
   return `${gid}:${uid}`;
@@ -269,7 +268,7 @@ setInterval(async () => {
   try {
     const now = new Date(new Date().toLocaleString("en-US", { timeZone: TZ }));
 
-    const day = now.getDay(); // 0 Sunday
+    const day = now.getDay();
     const hh = now.getHours();
     const mm = now.getMinutes();
     const key = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
@@ -282,7 +281,7 @@ setInterval(async () => {
   } catch {}
 }, 60_000);
 
-// ===================== SLASH COMMANDS (FIXED) =====================
+// ===================== SLASH COMMANDS =====================
 const commandBuilders = [
   new SlashCommandBuilder().setName("help").setDescription("عرض جميع الأوامر"),
 
@@ -391,10 +390,14 @@ async function registerCommands() {
   console.log("✅ Global Commands Synced");
 }
 
-// ===================== INTERACTIONS =====================
+// ===================== INTERACTIONS (FIXED REPLY LOGIC) =====================
 client.on("interactionCreate", async (i) => {
   try {
     if (!i.isChatInputCommand()) return;
+
+    // أهم سطر: نرد بسرعة حتى ما يطلع "The application did not respond"
+    await i.deferReply({ ephemeral: false });
+
     const gid = i.guildId;
     const isOwner = i.user.id === OWNER_ID;
 
@@ -423,7 +426,7 @@ client.on("interactionCreate", async (i) => {
           ].join("\n")
         );
 
-      return i.reply({ embeds: [embed] });
+      return i.editReply({ embeds: [embed] });
     }
 
     if (i.commandName === "rank") {
@@ -433,7 +436,7 @@ client.on("interactionCreate", async (i) => {
       const total = row.text_total + row.voice_total;
       const nextAt = requiredXP(row.level);
 
-      return i.reply({
+      return i.editReply({
         content:
 `👑 TR10 RANK
 
@@ -480,28 +483,28 @@ client.on("interactionCreate", async (i) => {
         msg += `${idx + 1}. <@${r.user_id}> — ${r.xp}\n`;
       });
 
-      return i.reply({ content: msg });
+      return i.editReply({ content: msg });
     }
 
     if (i.commandName === "lock" || i.commandName === "unlock") {
       if (!i.memberPermissions?.has(PermissionsBitField.Flags.ManageChannels)) {
-        return i.reply({ content: "❌ ما عندك صلاحية.", ephemeral: true });
+        return i.editReply("❌ ما عندك صلاحية.");
       }
 
       const channel = i.channel;
-      if (!channel) return i.reply({ content: "❌ ما فيه روم.", ephemeral: true });
+      if (!channel) return i.editReply("❌ ما فيه روم.");
 
       const deny = i.commandName === "lock";
       await channel.permissionOverwrites.edit(i.guild.roles.everyone, {
         SendMessages: deny ? false : null
       });
 
-      return i.reply(deny ? "🔒 تم قفل الروم." : "🔓 تم فتح الروم.");
+      return i.editReply(deny ? "🔒 تم قفل الروم." : "🔓 تم فتح الروم.");
     }
 
     if (i.commandName === "set-congrats") {
       if (!i.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild)) {
-        return i.reply({ content: "❌ ما عندك صلاحية.", ephemeral: true });
+        return i.editReply("❌ ما عندك صلاحية.");
       }
 
       const ch = i.options.getChannel("channel");
@@ -512,19 +515,19 @@ client.on("interactionCreate", async (i) => {
         [ch.id, gid]
       );
 
-      return i.reply(`✅ تم تعيين روم التهنئة: ${ch}`);
+      return i.editReply(`✅ تم تعيين روم التهنئة: ${ch}`);
     }
 
     if (i.commandName === "set-level-role") {
       if (!i.memberPermissions?.has(PermissionsBitField.Flags.ManageRoles)) {
-        return i.reply({ content: "❌ ما عندك صلاحية.", ephemeral: true });
+        return i.editReply("❌ ما عندك صلاحية.");
       }
 
       const level = i.options.getInteger("level");
       const role = i.options.getRole("role");
 
       if (level < 1) {
-        return i.reply({ content: "❌ اللفل لازم يكون 1 أو أكثر.", ephemeral: true });
+        return i.editReply("❌ اللفل لازم يكون 1 أو أكثر.");
       }
 
       await db.run(
@@ -534,12 +537,12 @@ client.on("interactionCreate", async (i) => {
         [gid, level, role.id]
       );
 
-      return i.reply(`✅ تم ربط ${role} مع لفل **${level}**`);
+      return i.editReply(`✅ تم ربط ${role} مع لفل **${level}**`);
     }
 
     if (i.commandName === "autoreply-add") {
       if (!i.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild)) {
-        return i.reply({ content: "❌ ما عندك صلاحية.", ephemeral: true });
+        return i.editReply("❌ ما عندك صلاحية.");
       }
 
       const trigger = i.options.getString("trigger").trim().toLowerCase();
@@ -552,12 +555,12 @@ client.on("interactionCreate", async (i) => {
         [gid, trigger, reply]
       );
 
-      return i.reply(`✅ تم حفظ الرد التلقائي لـ: **${trigger}**`);
+      return i.editReply(`✅ تم حفظ الرد التلقائي لـ: **${trigger}**`);
     }
 
     if (i.commandName === "autoreply-remove") {
       if (!i.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild)) {
-        return i.reply({ content: "❌ ما عندك صلاحية.", ephemeral: true });
+        return i.editReply("❌ ما عندك صلاحية.");
       }
 
       const trigger = i.options.getString("trigger").trim().toLowerCase();
@@ -566,12 +569,12 @@ client.on("interactionCreate", async (i) => {
         trigger
       ]);
 
-      return i.reply(`🗑️ تم حذف الرد التلقائي لـ: **${trigger}**`);
+      return i.editReply(`🗑️ تم حذف الرد التلقائي لـ: **${trigger}**`);
     }
 
     if (i.commandName === "autoreply-list") {
       if (!i.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild)) {
-        return i.reply({ content: "❌ ما عندك صلاحية.", ephemeral: true });
+        return i.editReply("❌ ما عندك صلاحية.");
       }
 
       const rows = await db.all(
@@ -579,18 +582,18 @@ client.on("interactionCreate", async (i) => {
         [gid]
       );
 
-      if (!rows.length) return i.reply("📭 ما فيه ردود تلقائية.");
+      if (!rows.length) return i.editReply("📭 ما فيه ردود تلقائية.");
 
       let txt = "📌 Auto Replies:\n\n";
       rows.slice(0, 30).forEach((r) => {
         txt += `• **${r.trigger}** → ${r.reply}\n`;
       });
 
-      return i.reply(txt);
+      return i.editReply(txt);
     }
 
     if (i.commandName === "owner-reset-user") {
-      if (!isOwner) return i.reply({ content: "❌ هذا للأونر فقط.", ephemeral: true });
+      if (!isOwner) return i.editReply("❌ هذا للأونر فقط.");
 
       const user = i.options.getUser("user");
       await db.run(
@@ -600,32 +603,38 @@ client.on("interactionCreate", async (i) => {
         [gid, user.id]
       );
 
-      return i.reply(`✅ تم تصفير ${user} بالكامل.`);
+      return i.editReply(`✅ تم تصفير ${user} بالكامل.`);
     }
 
     if (i.commandName === "owner-reset-guild") {
-      if (!isOwner) return i.reply({ content: "❌ هذا للأونر فقط.", ephemeral: true });
+      if (!isOwner) return i.editReply("❌ هذا للأونر فقط.");
 
       await db.run(`DELETE FROM users WHERE guild_id = ?`, [gid]);
       await db.run(`DELETE FROM level_roles WHERE guild_id = ?`, [gid]);
       await db.run(`DELETE FROM autoreplies WHERE guild_id = ?`, [gid]);
       await db.run(`DELETE FROM settings WHERE guild_id = ?`, [gid]);
 
-      return i.reply("✅ تم تصفير السيرفر كامل (XP + إعدادات + ردود).");
+      return i.editReply("✅ تم تصفير السيرفر كامل (XP + إعدادات + ردود).");
     }
 
     if (i.commandName === "owner-sync") {
-      if (!isOwner) return i.reply({ content: "❌ هذا للأونر فقط.", ephemeral: true });
+      if (!isOwner) return i.editReply("❌ هذا للأونر فقط.");
       await registerCommands();
-      return i.reply("♻️ تم تحديث/مزامنة الأوامر عالميًا.");
+      return i.editReply("♻️ تم تحديث/مزامنة الأوامر عالميًا.");
     }
+
+    // إذا وصل هنا: أمر غير معروف
+    return i.editReply("❌ أمر غير معروف.");
   } catch (e) {
     console.log("interaction error:", e);
-    if (i?.replied || i?.deferred) {
-      i.followUp({ content: "❌ صار خطأ داخلي.", ephemeral: true }).catch(() => {});
-    } else {
-      i.reply({ content: "❌ صار خطأ داخلي.", ephemeral: true }).catch(() => {});
-    }
+
+    try {
+      if (i.deferred || i.replied) {
+        await i.editReply("❌ صار خطأ داخلي.");
+      } else {
+        await i.reply({ content: "❌ صار خطأ داخلي.", ephemeral: true });
+      }
+    } catch {}
   }
 });
 
