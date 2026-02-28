@@ -1,4 +1,13 @@
-// TR10 Attendance Pro FINAL (FIXED VALIDATION ERROR + STABLE START)
+/**
+ * TR10 Attendance Bot V8 (NO ValidationError) ✅
+ * discord.js v14 + sqlite + Express
+ * Commands:
+ *  /panel
+ *  /status
+ *  /stats
+ *  /autorole add hours role
+ *  /autorole list
+ */
 
 require("dotenv").config();
 const express = require("express");
@@ -19,12 +28,12 @@ const {
 const sqlite3 = require("sqlite3");
 const { open } = require("sqlite");
 
-/* ================= WEB KEEP ALIVE ================= */
+/* ================= WEB ================= */
 const app = express();
-app.get("/", (req, res) => res.send("TR10 Attendance Running ✅"));
-app.get("/health", (req, res) => res.send("OK"));
-app.all("*", (req, res) => res.send("OK"));
-app.listen(process.env.PORT || 3000, () => console.log("🌐 Web server running"));
+app.get("/", (req, res) => res.status(200).send("Bot Running ✅"));
+app.get("/health", (req, res) => res.status(200).send("OK ✅"));
+app.all("*", (req, res) => res.status(200).send("OK ✅"));
+app.listen(process.env.PORT || 3000, () => console.log("🌐 Web server ready"));
 
 /* ================= ENV ================= */
 const TOKEN = process.env.TOKEN;
@@ -33,60 +42,53 @@ const OWNER_ID = process.env.OWNER_ID;
 const TZ = process.env.TZ || "Asia/Riyadh";
 
 if (!TOKEN || !CLIENT_ID || !OWNER_ID) {
-  console.log("❌ Missing ENV (TOKEN / CLIENT_ID / OWNER_ID)");
+  console.log("❌ Missing ENV: TOKEN / CLIENT_ID / OWNER_ID");
   process.exit(1);
 }
 
-/* ====== Crash Protection ====== */
-process.on("unhandledRejection", (err) => console.error("❌ UNHANDLED REJECTION:", err));
-process.on("uncaughtException", (err) => console.error("❌ UNCAUGHT EXCEPTION:", err));
+/* ====== حماية أخطاء ====== */
+process.on("unhandledRejection", (e) => console.error("❌ UNHANDLED:", e));
+process.on("uncaughtException", (e) => console.error("❌ UNCAUGHT:", e));
 
 /* ================= CLIENT ================= */
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
 });
 
-/* ================= DATABASE ================= */
+/* ================= DB ================= */
 let db;
 
 async function initDb() {
   db = await open({
-    filename: "./attendance.db",
+    filename: "./data.db",
     driver: sqlite3.Database,
   });
 
-  await db.exec(`PRAGMA journal_mode = WAL;`);
-  await db.exec(`PRAGMA busy_timeout = 5000;`);
+  await db.exec(`PRAGMA journal_mode=WAL;`);
+  await db.exec(`PRAGMA busy_timeout=5000;`);
 
   await db.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
-      guild_id TEXT,
-      user_id TEXT,
-      session_no INTEGER,
-      checkin INTEGER,
+      guild_id TEXT NOT NULL,
+      user_id  TEXT NOT NULL,
+      session_no INTEGER NOT NULL,
+      checkin INTEGER NOT NULL,
       PRIMARY KEY (guild_id, user_id)
-    );
-
-    CREATE TABLE IF NOT EXISTS logs (
-      guild_id TEXT,
-      user_id TEXT,
-      duration INTEGER,
-      date TEXT
     );
 
     CREATE TABLE IF NOT EXISTS stats (
-      guild_id TEXT,
-      user_id TEXT,
-      total_time INTEGER DEFAULT 0,
-      total_entries INTEGER DEFAULT 0,
+      guild_id TEXT NOT NULL,
+      user_id  TEXT NOT NULL,
+      total_time INTEGER NOT NULL DEFAULT 0,
+      total_entries INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (guild_id, user_id)
     );
 
-    CREATE TABLE IF NOT EXISTS settings (
-      guild_id TEXT PRIMARY KEY,
-      log_channel TEXT,
-      auto_role TEXT,
-      role_hours INTEGER DEFAULT 0
+    CREATE TABLE IF NOT EXISTS autoroles (
+      guild_id TEXT NOT NULL,
+      hours INTEGER NOT NULL,
+      role_id TEXT NOT NULL,
+      PRIMARY KEY (guild_id, hours)
     );
   `);
 
@@ -102,7 +104,11 @@ function msToHMS(ms) {
   return `${h}h ${m}m ${ss}s`;
 }
 
-function today() {
+function totalHoursFromMs(ms) {
+  return Math.floor((ms || 0) / 3600000);
+}
+
+function fmtDate() {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: TZ,
     year: "numeric",
@@ -111,7 +117,7 @@ function today() {
   }).format(new Date());
 }
 
-/* ================= COMMANDS (FIXED: all options have descriptions) ================= */
+/* ================= COMMANDS (FIXED DESCRIPTIONS ✅) ================= */
 function buildCommands() {
   return [
     new SlashCommandBuilder()
@@ -120,53 +126,37 @@ function buildCommands() {
 
     new SlashCommandBuilder()
       .setName("status")
-      .setDescription("عرض حالتك (داخل/خارج) ومدة الجلسة"),
+      .setDescription("عرض حالتك الحالية (داخل/خارج)"),
 
     new SlashCommandBuilder()
       .setName("stats")
-      .setDescription("لوحة الإحصائيات الخاصة بك"),
+      .setDescription("لوحة إحصائياتك + عدد الداخلين الآن + ترتيبك"),
 
     new SlashCommandBuilder()
-      .setName("top")
-      .setDescription("عرض التوب حسب الوقت")
-      .addStringOption((o) =>
-        o
-          .setName("range")
-          .setDescription("اختر المدى")
-          .setRequired(true)
-          .addChoices(
-            { name: "اليوم", value: "day" },
-            { name: "الكل", value: "all" }
+      .setName("autorole")
+      .setDescription("نظام الرتب التلقائية حسب عدد الساعات")
+      .addSubcommand((s) =>
+        s
+          .setName("add")
+          .setDescription("إضافة رتبة تلقائية عند عدد ساعات معين")
+          .addIntegerOption((o) =>
+            o
+              .setName("hours")
+              .setDescription("عدد الساعات المطلوبة للحصول على الرتبة")
+              .setRequired(true)
+              .setMinValue(1)
           )
-      ),
-
-    new SlashCommandBuilder()
-      .setName("setlog")
-      .setDescription("تحديد روم اللوق (Admin)")
-      .addChannelOption((o) =>
-        o
-          .setName("channel")
-          .setDescription("اختر روم اللوق")
-          .addChannelTypes(ChannelType.GuildText)
-          .setRequired(true)
+          .addRoleOption((o) =>
+            o
+              .setName("role")
+              .setDescription("الرتبة التي يحصل عليها العضو عند الوصول للساعات")
+              .setRequired(true)
+          )
       )
-      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-
-    new SlashCommandBuilder()
-      .setName("setautorole")
-      .setDescription("تحديد رتبة تلقائية حسب عدد ساعات (Admin)")
-      .addRoleOption((o) =>
-        o
-          .setName("role")
-          .setDescription("اختر الرتبة")
-          .setRequired(true)
-      )
-      .addIntegerOption((o) =>
-        o
-          .setName("hours")
-          .setDescription("عدد الساعات المطلوبة للحصول على الرتبة")
-          .setRequired(true)
-          .setMinValue(1)
+      .addSubcommand((s) =>
+        s
+          .setName("list")
+          .setDescription("عرض قائمة الرتب التلقائية في السيرفر")
       )
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   ].map((c) => c.toJSON());
@@ -175,10 +165,10 @@ function buildCommands() {
 async function registerGlobalCommands() {
   const rest = new REST({ version: "10" }).setToken(TOKEN);
   await rest.put(Routes.applicationCommands(CLIENT_ID), { body: buildCommands() });
-  console.log("✅ Global commands registered");
+  console.log("✅ Global commands pushed");
 }
 
-/* ================= PANEL ================= */
+/* ================= PANEL UI ================= */
 function panelEmbed() {
   return new EmbedBuilder()
     .setTitle("نظام تسجيل الحضور")
@@ -193,18 +183,42 @@ function panelRow() {
   );
 }
 
-/* ================= LOG HELPER ================= */
-async function sendLog(guild, guildId, embed) {
-  try {
-    const setting = await db.get("SELECT log_channel FROM settings WHERE guild_id=?", [guildId]);
-    if (!setting?.log_channel) return;
+/* ================= CORE ================= */
+async function getOpenSession(gid, uid) {
+  return db.get("SELECT * FROM sessions WHERE guild_id=? AND user_id=?", [gid, uid]);
+}
 
-    const ch = await guild.channels.fetch(setting.log_channel).catch(() => null);
-    if (!ch || !ch.isTextBased()) return;
+async function getStats(gid, uid) {
+  return db.get("SELECT * FROM stats WHERE guild_id=? AND user_id=?", [gid, uid]);
+}
 
-    await ch.send({ embeds: [embed] }).catch(() => {});
-  } catch (e) {
-    console.log("LOG ERROR:", e);
+async function ensureStatsRow(gid, uid) {
+  await db.run(
+    `INSERT INTO stats (guild_id, user_id, total_time, total_entries)
+     VALUES (?, ?, 0, 0)
+     ON CONFLICT(guild_id, user_id) DO NOTHING`,
+    [gid, uid]
+  );
+}
+
+async function applyAutoRoles(interaction, totalTimeMs) {
+  const gid = interaction.guildId;
+  const uid = interaction.user.id;
+
+  const h = totalHoursFromMs(totalTimeMs);
+  const rows = await db.all(
+    "SELECT hours, role_id FROM autoroles WHERE guild_id=? AND hours <= ? ORDER BY hours ASC",
+    [gid, h]
+  );
+  if (!rows.length) return;
+
+  const member = await interaction.guild.members.fetch(uid).catch(() => null);
+  if (!member) return;
+
+  for (const r of rows) {
+    if (!member.roles.cache.has(r.role_id)) {
+      await member.roles.add(r.role_id).catch(() => {});
+    }
   }
 }
 
@@ -213,26 +227,23 @@ client.on("interactionCreate", async (interaction) => {
   try {
     if (!interaction.inGuild()) return;
 
-    // (أمان) إذا البوت بدأ ولسه DB ما جاهز
-    if (!db) return;
+    const gid = interaction.guildId;
+    const uid = interaction.user.id;
 
+    /* ---- SLASH ---- */
     if (interaction.isChatInputCommand()) {
-      // عشان ما يطلع did not respond لو صار بطء
-      await interaction.deferReply({ ephemeral: true }).catch(() => null);
+      const cmd = interaction.commandName;
 
-      if (interaction.commandName === "panel") {
-        // panel نبيه يطلع للكل مو ephemeral
-        return interaction.editReply("✅ تم إرسال اللوحة.").then(async () => {
-          await interaction.channel.send({ embeds: [panelEmbed()], components: [panelRow()] }).catch(() => {});
-        });
+      // panel رد فوري
+      if (cmd === "panel") {
+        return interaction.reply({ embeds: [panelEmbed()], components: [panelRow()] });
       }
 
-      if (interaction.commandName === "status") {
-        const open = await db.get(
-          "SELECT * FROM sessions WHERE guild_id=? AND user_id=?",
-          [interaction.guildId, interaction.user.id]
-        );
+      // باقي الأوامر: نأمنها
+      await interaction.deferReply({ ephemeral: true }).catch(() => null);
 
+      if (cmd === "status") {
+        const open = await getOpenSession(gid, uid);
         if (!open) return interaction.editReply("📌 أنت خارج");
 
         return interaction.editReply(
@@ -240,195 +251,154 @@ client.on("interactionCreate", async (interaction) => {
         );
       }
 
-      if (interaction.commandName === "stats") {
-        const stat = await db.get(
-          "SELECT * FROM stats WHERE guild_id=? AND user_id=?",
-          [interaction.guildId, interaction.user.id]
+      if (cmd === "stats") {
+        await ensureStatsRow(gid, uid);
+
+        const my = await getStats(gid, uid);
+        const totalTime = my?.total_time || 0;
+        const totalH = totalHoursFromMs(totalTime);
+
+        const onlineNow = await db.all("SELECT user_id FROM sessions WHERE guild_id=?", [gid]);
+
+        const ranking = await db.all(
+          "SELECT user_id, total_time FROM stats WHERE guild_id=? ORDER BY total_time DESC",
+          [gid]
+        );
+        const pos = ranking.findIndex((r) => r.user_id === uid) + 1;
+
+        const auto = await db.all(
+          "SELECT hours, role_id FROM autoroles WHERE guild_id=? ORDER BY hours ASC",
+          [gid]
         );
 
-        const totalTime = stat?.total_time || 0;
-        const totalEntries = stat?.total_entries || 0;
-
-        return interaction.editReply({
-          embeds: [
-            new EmbedBuilder()
-              .setTitle("📊 لوحة الإحصائيات")
-              .setDescription(
-                `👤 <@${interaction.user.id}>\n\n⏱️ إجمالي الوقت: ${msToHMS(totalTime)}\n🔁 عدد مرات الدخول: ${totalEntries}`
-              )
-              .setColor(0x2b2d31),
-          ],
-        });
-      }
-
-      if (interaction.commandName === "top") {
-        const range = interaction.options.getString("range", true);
-        let rows;
-
-        if (range === "day") {
-          rows = await db.all(
-            "SELECT user_id, SUM(duration) as total FROM logs WHERE guild_id=? AND date=? GROUP BY user_id ORDER BY total DESC LIMIT 10",
-            [interaction.guildId, today()]
-          );
-        } else {
-          rows = await db.all(
-            "SELECT user_id, total_time as total FROM stats WHERE guild_id=? ORDER BY total DESC LIMIT 10",
-            [interaction.guildId]
-          );
+        let nextRoleTxt = "لا يوجد";
+        for (const r of auto) {
+          if (totalH < r.hours) {
+            nextRoleTxt = `<@&${r.role_id}> بعد **${r.hours - totalH}** ساعة`;
+            break;
+          }
         }
 
-        if (!rows.length) return interaction.editReply("لا يوجد بيانات");
+        const emb = new EmbedBuilder()
+          .setTitle("📊 لوحة إحصائياتك")
+          .setColor(0x2b2d31)
+          .addFields(
+            { name: "⏱️ ساعاتك (مدى الحياة)", value: `**${totalH}** ساعة`, inline: true },
+            { name: "🔁 عدد الجلسات", value: `**${my?.total_entries || 0}**`, inline: true },
+            { name: "🟢 الداخلين الآن", value: `**${onlineNow.length}**`, inline: true },
+            { name: "🏆 ترتيبك بالسيرفر", value: pos ? `**#${pos}**` : "غير مصنف", inline: true },
+            { name: "🎯 أقرب رتبة قادمة", value: nextRoleTxt, inline: false }
+          )
+          .setFooter({ text: `📅 ${fmtDate()} • TR10 V8` });
 
-        const text = rows
-          .map((r, i) => `${i + 1}) <@${r.user_id}> - ${msToHMS(r.total || 0)}`)
-          .join("\n");
-
-        return interaction.editReply({
-          embeds: [new EmbedBuilder().setTitle("🏆 التوب").setDescription(text).setColor(0x2b2d31)],
-        });
+        return interaction.editReply({ embeds: [emb] });
       }
 
-      if (interaction.commandName === "setlog") {
-        const ch = interaction.options.getChannel("channel", true);
+      if (cmd === "autorole") {
+        const sub = interaction.options.getSubcommand();
 
-        await db.run(
-          "INSERT INTO settings (guild_id, log_channel) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET log_channel=excluded.log_channel",
-          [interaction.guildId, ch.id]
-        );
+        if (sub === "add") {
+          const hrs = interaction.options.getInteger("hours", true);
+          const role = interaction.options.getRole("role", true);
 
-        return interaction.editReply(`✅ تم تحديد روم اللوق: <#${ch.id}>`);
-      }
+          await db.run(
+            "INSERT OR REPLACE INTO autoroles (guild_id, hours, role_id) VALUES (?,?,?)",
+            [gid, hrs, role.id]
+          );
 
-      if (interaction.commandName === "setautorole") {
-        const role = interaction.options.getRole("role", true);
-        const hours = interaction.options.getInteger("hours", true);
+          return interaction.editReply(`✅ تم إضافة رتبة ${role} عند **${hrs}** ساعة`);
+        }
 
-        await db.run(
-          "INSERT INTO settings (guild_id, auto_role, role_hours) VALUES (?, ?, ?) ON CONFLICT(guild_id) DO UPDATE SET auto_role=excluded.auto_role, role_hours=excluded.role_hours",
-          [interaction.guildId, role.id, hours]
-        );
+        if (sub === "list") {
+          const rows = await db.all(
+            "SELECT hours, role_id FROM autoroles WHERE guild_id=? ORDER BY hours ASC",
+            [gid]
+          );
 
-        return interaction.editReply(`✅ سيتم إعطاء الرتبة <@&${role.id}> بعد **${hours}** ساعة`);
+          if (!rows.length) return interaction.editReply("📌 لا يوجد رتب تلقائية مضافة.");
+
+          const text = rows.map((r, i) => `**${i + 1})** ${r.hours} ساعة → <@&${r.role_id}>`).join("\n");
+
+          const emb = new EmbedBuilder()
+            .setTitle("📌 قائمة الرتب التلقائية")
+            .setDescription(text)
+            .setColor(0x2b2d31);
+
+          return interaction.editReply({ embeds: [emb] });
+        }
       }
 
       return interaction.editReply("❓ أمر غير معروف.");
     }
 
+    /* ---- BUTTONS ---- */
     if (interaction.isButton()) {
-      // رد سريع لتفادي timeout
+      const gid = interaction.guildId;
+      const uid = interaction.user.id;
+
+      // رد سريع لتفادي did not respond
       await interaction.deferReply({ ephemeral: true }).catch(() => null);
 
-      const open = await db.get(
-        "SELECT * FROM sessions WHERE guild_id=? AND user_id=?",
-        [interaction.guildId, interaction.user.id]
-      );
+      const open = await getOpenSession(gid, uid);
 
       if (interaction.customId === "in") {
-        if (open) return interaction.editReply("⚠️ أنت داخل بالفعل");
+        if (open) return interaction.editReply("⚠️ أنت داخل بالفعل.");
 
-        const row = await db.get(
-          "SELECT total_entries FROM stats WHERE guild_id=? AND user_id=?",
-          [interaction.guildId, interaction.user.id]
+        await ensureStatsRow(gid, uid);
+        const st = await getStats(gid, uid);
+        const sessionNo = (st?.total_entries || 0) + 1;
+
+        await db.run(
+          "INSERT OR REPLACE INTO sessions (guild_id, user_id, session_no, checkin) VALUES (?,?,?,?)",
+          [gid, uid, sessionNo, Date.now()]
         );
 
-        const sessionNo = (row?.total_entries || 0) + 1;
-
-        await db.run("INSERT INTO sessions VALUES (?,?,?,?)", [
-          interaction.guildId,
-          interaction.user.id,
-          sessionNo,
-          Date.now(),
-        ]);
-
-        // LOG
-        const emb = new EmbedBuilder()
-          .setTitle("✅ تسجيل دخول")
-          .setDescription(`👤 <@${interaction.user.id}>\n🔁 رقم الدخول: ${sessionNo}\n🗓️ ${today()}`)
-          .setColor(0x00cc66);
-        await sendLog(interaction.guild, interaction.guildId, emb);
-
-        return interaction.editReply(`✅ تم تسجيل الدخول 🔁 (${sessionNo})`);
+        return interaction.editReply(`✅ تم تسجيل الدخول 🔁 (**${sessionNo}**)`);
       }
 
       if (interaction.customId === "out") {
-        if (!open) return interaction.editReply("⚠️ أنت غير مسجل دخول");
+        if (!open) return interaction.editReply("⚠️ أنت غير مسجل دخول.");
 
         const duration = Date.now() - open.checkin;
 
-        await db.run("DELETE FROM sessions WHERE guild_id=? AND user_id=?", [
-          interaction.guildId,
-          interaction.user.id,
-        ]);
-
-        await db.run("INSERT INTO logs VALUES (?,?,?,?)", [
-          interaction.guildId,
-          interaction.user.id,
-          duration,
-          today(),
-        ]);
+        await db.run("DELETE FROM sessions WHERE guild_id=? AND user_id=?", [gid, uid]);
 
         await db.run(
-          `
-          INSERT INTO stats (guild_id, user_id, total_time, total_entries)
-          VALUES (?,?,?,1)
-          ON CONFLICT(guild_id,user_id)
-          DO UPDATE SET
-            total_time = total_time + excluded.total_time,
-            total_entries = total_entries + 1
-        `,
-          [interaction.guildId, interaction.user.id, duration]
+          `INSERT INTO stats (guild_id, user_id, total_time, total_entries)
+           VALUES (?, ?, ?, 1)
+           ON CONFLICT(guild_id, user_id)
+           DO UPDATE SET
+             total_time = total_time + excluded.total_time,
+             total_entries = total_entries + 1`,
+          [gid, uid, duration]
         );
 
-        // AUTO ROLE CHECK
-        const setting = await db.get("SELECT auto_role, role_hours FROM settings WHERE guild_id=?", [
-          interaction.guildId,
-        ]);
+        const after = await getStats(gid, uid);
+        await applyAutoRoles(interaction, after?.total_time || 0);
 
-        if (setting?.auto_role && setting?.role_hours) {
-          const stat = await db.get("SELECT total_time FROM stats WHERE guild_id=? AND user_id=?", [
-            interaction.guildId,
-            interaction.user.id,
-          ]);
-
-          if ((stat?.total_time || 0) >= setting.role_hours * 3600000) {
-            const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
-            if (member) await member.roles.add(setting.auto_role).catch(() => {});
-          }
-        }
-
-        // LOG
-        const emb = new EmbedBuilder()
-          .setTitle("💤 تسجيل خروج")
-          .setDescription(
-            `👤 <@${interaction.user.id}>\n⏱️ المدة: ${msToHMS(duration)}\n🔁 رقم الدخول: ${open.session_no}\n🗓️ ${today()}`
-          )
-          .setColor(0xff3344);
-        await sendLog(interaction.guild, interaction.guildId, emb);
-
-        return interaction.editReply(`💤 تم تسجيل الخروج\n⏱️ ${msToHMS(duration)}`);
+        return interaction.editReply(`💤 تم تسجيل الخروج\n⏱️ مدة الجلسة: **${msToHMS(duration)}**`);
       }
 
       return interaction.editReply("زر غير معروف.");
     }
   } catch (err) {
-    console.log(err);
+    console.error("❌ INTERACTION ERROR:", err);
     try {
-      if (interaction.deferred || interaction.replied) {
-        await interaction.editReply("حدث خطأ").catch(() => {});
-      } else {
-        await interaction.reply({ content: "حدث خطأ", ephemeral: true }).catch(() => {});
-      }
+      if (interaction?.deferred) return interaction.editReply("حدث خطأ بسيط.");
+      if (interaction?.isRepliable() && !interaction.replied) return interaction.reply({ content: "حدث خطأ بسيط.", ephemeral: true });
     } catch {}
   }
 });
 
-/* ================= START (STABLE ORDER) ================= */
+/* ================= START ================= */
 (async () => {
-  await initDb(); // ✅ لازم قبل أي شيء
-  await client.login(TOKEN); // ✅ يسجل دخول
-})();
+  await initDb();
 
-client.once("ready", async () => {
-  console.log(`✅ Logged as ${client.user.tag}`);
-  await registerGlobalCommands().catch((e) => console.log("❌ Command Register Error:", e));
-});
+  client.once("ready", async () => {
+    console.log(`✅ Logged in as ${client.user.tag}`);
+    await registerGlobalCommands().catch((e) => console.error("Commands push error:", e));
+  });
+
+  console.log("🔌 Logging in...");
+  await client.login(TOKEN);
+})();
