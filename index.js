@@ -1,11 +1,14 @@
 // ==========================================================
-// TR10 Attendance Bot V13 MAX
-// ULTRA CLEAN • AUTO RESET COMMANDS • FULL SYSTEM
-// discord.js v14 + sqlite + express
+// TR10 TITANIUM CORE v1
+// Global Auto Sync + Auto Wipe Old Commands
+// Stable • Clean • No XP • No Validation Errors
 // ==========================================================
 
 require("dotenv").config();
 const express = require("express");
+const sqlite3 = require("sqlite3");
+const { open } = require("sqlite");
+
 const {
   Client,
   GatewayIntentBits,
@@ -20,22 +23,20 @@ const {
   ChannelType,
 } = require("discord.js");
 
-const sqlite3 = require("sqlite3");
-const { open } = require("sqlite");
-
 // ================= ENV =================
-const TOKEN = process.env.TOKEN;
-const CLIENT_ID = process.env.CLIENT_ID;
-const OWNER_ID = process.env.OWNER_ID;
+const TOKEN = process.env.TOKEN || "";
+const CLIENT_ID = process.env.CLIENT_ID || "";
+const OWNER_ID = process.env.OWNER_ID || "";
 
 if (!TOKEN || !CLIENT_ID || !OWNER_ID) {
-  console.log("❌ Missing TOKEN / CLIENT_ID / OWNER_ID");
+  console.log("❌ Missing ENV (TOKEN / CLIENT_ID / OWNER_ID)");
   process.exit(1);
 }
 
-// ================= WEB =================
+// ================= KEEP ALIVE =================
 const app = express();
-app.get("/", (req, res) => res.send("TR10 V13 MAX Running ✅"));
+app.get("/", (_, res) => res.send("TR10 TITANIUM RUNNING"));
+app.get("/health", (_, res) => res.send("OK"));
 app.listen(process.env.PORT || 3000);
 
 // ================= CLIENT =================
@@ -48,101 +49,60 @@ let db;
 
 async function initDB() {
   db = await open({
-    filename: "./attendance_v13.db",
+    filename: "./titanium.db",
     driver: sqlite3.Database,
   });
 
   await db.exec(`
-    CREATE TABLE IF NOT EXISTS sessions (
-      guild_id TEXT,
-      user_id TEXT,
-      checkin_ms INTEGER,
-      session_no INTEGER,
-      PRIMARY KEY (guild_id, user_id)
-    );
+  CREATE TABLE IF NOT EXISTS settings(
+    guild_id TEXT PRIMARY KEY,
+    log_channel TEXT,
+    panel_channel TEXT,
+    panel_message TEXT,
+    locked INTEGER DEFAULT 0
+  );
 
-    CREATE TABLE IF NOT EXISTS stats (
-      guild_id TEXT,
-      user_id TEXT,
-      total_time_ms INTEGER DEFAULT 0,
-      total_entries INTEGER DEFAULT 0,
-      PRIMARY KEY (guild_id, user_id)
-    );
+  CREATE TABLE IF NOT EXISTS sessions(
+    guild_id TEXT,
+    user_id TEXT,
+    checkin INTEGER,
+    PRIMARY KEY(guild_id,user_id)
+  );
 
-    CREATE TABLE IF NOT EXISTS settings (
-      guild_id TEXT PRIMARY KEY,
-      panel_channel TEXT,
-      panel_message TEXT,
-      log_channel TEXT
-    );
+  CREATE TABLE IF NOT EXISTS stats(
+    guild_id TEXT,
+    user_id TEXT,
+    total_time INTEGER DEFAULT 0,
+    total_entries INTEGER DEFAULT 0,
+    PRIMARY KEY(guild_id,user_id)
+  );
 
-    CREATE TABLE IF NOT EXISTS role_rewards (
-      guild_id TEXT,
-      hours INTEGER,
-      role_id TEXT,
-      PRIMARY KEY (guild_id, hours, role_id)
-    );
+  CREATE TABLE IF NOT EXISTS logs(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT,
+    user_id TEXT,
+    action TEXT,
+    duration INTEGER,
+    at INTEGER
+  );
   `);
 }
 
 // ================= HELPERS =================
-function formatTime(ms) {
+function now() {
+  return Date.now();
+}
+
+function msToHM(ms) {
   const s = Math.floor(ms / 1000);
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   return `${h} ساعة ${m} دقيقة`;
 }
 
-async function giveRewards(guild, userId) {
-  const stat = await db.get(
-    "SELECT total_time_ms FROM stats WHERE guild_id=? AND user_id=?",
-    [guild.id, userId]
-  );
-  if (!stat) return;
-
-  const rewards = await db.all(
-    "SELECT * FROM role_rewards WHERE guild_id=?",
-    [guild.id]
-  );
-
-  const member = await guild.members.fetch(userId).catch(() => null);
-  if (!member) return;
-
-  for (const r of rewards) {
-    if (stat.total_time_ms >= r.hours * 3600000) {
-      if (!member.roles.cache.has(r.role_id)) {
-        await member.roles.add(r.role_id).catch(() => {});
-      }
-    }
-  }
-}
-
-async function updatePanel(guild) {
-  const s = await db.get("SELECT * FROM settings WHERE guild_id=?", [guild.id]);
-  if (!s?.panel_channel || !s?.panel_message) return;
-
-  const channel = await guild.channels.fetch(s.panel_channel).catch(() => null);
-  if (!channel) return;
-
-  const message = await channel.messages.fetch(s.panel_message).catch(() => null);
-  if (!message) return;
-
-  const active = await db.all(
-    "SELECT * FROM sessions WHERE guild_id=?",
-    [guild.id]
-  );
-
-  const list = active.length
-    ? active.map((x, i) => `**${i + 1}.** <@${x.user_id}>`).join("\n")
-    : "لا يوجد أحد حالياً.";
-
-  const embed = new EmbedBuilder()
-    .setColor(0x111827)
-    .setTitle("🛡️ لوحة الحضور V13 MAX")
-    .setDescription(`👥 المسجلين الآن (${active.length})\n\n${list}`)
-    .setFooter({ text: "TR10 ULTRA SYSTEM" });
-
-  const row = new ActionRowBuilder().addComponents(
+// ================= PANEL =================
+function buttons() {
+  return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId("checkin")
       .setLabel("تسجيل دخول")
@@ -152,8 +112,44 @@ async function updatePanel(guild) {
       .setLabel("تسجيل خروج")
       .setStyle(ButtonStyle.Danger)
   );
+}
 
-  await message.edit({ embeds: [embed], components: [row] });
+async function buildPanel(guildId) {
+  const rows = await db.all(
+    "SELECT user_id FROM sessions WHERE guild_id=?",
+    [guildId]
+  );
+
+  const list =
+    rows.length > 0
+      ? rows.map(r => `<@${r.user_id}>`).join("\n")
+      : "لا يوجد أحد حالياً";
+
+  return new EmbedBuilder()
+    .setColor(0x111827)
+    .setTitle("🛡️ نظام الحضور الرسمي")
+    .setDescription(
+      "اضغط لتسجيل الدخول أو الخروج\n\n" +
+      "━━━━━━━━━━━━━━━━━━\n" +
+      "👥 المسجلين حالياً:\n\n" +
+      list +
+      "\n━━━━━━━━━━━━━━━━━━"
+    )
+    .setFooter({ text: "TR10 TITANIUM" });
+}
+
+async function updatePanel(guild) {
+  const s = await db.get("SELECT * FROM settings WHERE guild_id=?", [guild.id]);
+  if (!s?.panel_channel || !s?.panel_message) return;
+
+  const ch = await guild.channels.fetch(s.panel_channel).catch(() => null);
+  if (!ch) return;
+
+  const msg = await ch.messages.fetch(s.panel_message).catch(() => null);
+  if (!msg) return;
+
+  const embed = await buildPanel(guild.id);
+  await msg.edit({ embeds: [embed], components: [buttons()] });
 }
 
 // ================= COMMANDS =================
@@ -164,10 +160,9 @@ function buildCommands() {
       .setDescription("إنشاء لوحة الحضور")
       .addChannelOption(o =>
         o.setName("channel")
-          .setDescription("اختر روم")
-          .addChannelTypes(ChannelType.GuildText)
-          .setRequired(true)
-      )
+         .setDescription("الروم")
+         .addChannelTypes(ChannelType.GuildText)
+         .setRequired(true))
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
     new SlashCommandBuilder()
@@ -175,140 +170,171 @@ function buildCommands() {
       .setDescription("تحديد روم اللوق")
       .addChannelOption(o =>
         o.setName("channel")
-          .setDescription("روم اللوق")
-          .addChannelTypes(ChannelType.GuildText)
-          .setRequired(true)
-      )
+         .setDescription("الروم")
+         .addChannelTypes(ChannelType.GuildText)
+         .setRequired(true))
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-
-    new SlashCommandBuilder()
-      .setName("status")
-      .setDescription("عرض حالتك"),
 
     new SlashCommandBuilder()
       .setName("top")
       .setDescription("عرض التوب")
       .addStringOption(o =>
         o.setName("type")
-          .setDescription("نوع الترتيب")
-          .setRequired(true)
-          .addChoices(
-            { name: "الوقت", value: "time" },
-            { name: "مرات الدخول", value: "entries" }
-          )
-      ),
+         .setDescription("نوع الترتيب")
+         .setRequired(true)
+         .addChoices(
+           { name: "الوقت", value: "time" },
+           { name: "الدخول", value: "entries" }
+         )),
 
     new SlashCommandBuilder()
-      .setName("setrole")
-      .setDescription("تحديد رتبة عند عدد ساعات")
-      .addIntegerOption(o =>
-        o.setName("hours")
-          .setDescription("عدد الساعات")
-          .setRequired(true)
-      )
-      .addRoleOption(o =>
-        o.setName("role")
-          .setDescription("الرتبة")
-          .setRequired(true)
-      )
+      .setName("status")
+      .setDescription("عرض حالتك الحالية"),
+
+    new SlashCommandBuilder()
+      .setName("lock")
+      .setDescription("قفل النظام")
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
+    new SlashCommandBuilder()
+      .setName("unlock")
+      .setDescription("فتح النظام")
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
+    new SlashCommandBuilder()
+      .setName("wipecommands")
+      .setDescription("OWNER: حذف جميع الأوامر")
   ].map(c => c.toJSON());
 }
 
-async function resetCommands(guildId) {
+// ================= AUTO GLOBAL WIPE + REGISTER =================
+async function registerCommands() {
   const rest = new REST({ version: "10" }).setToken(TOKEN);
-  await rest.put(Routes.applicationGuildCommands(CLIENT_ID, guildId), { body: [] });
-  await rest.put(Routes.applicationGuildCommands(CLIENT_ID, guildId), { body: buildCommands() });
-  console.log("✅ Commands reset:", guildId);
+
+  console.log("🧹 Wiping old commands...");
+  await rest.put(Routes.applicationCommands(CLIENT_ID), { body: [] });
+
+  console.log("🚀 Registering new commands...");
+  await rest.put(Routes.applicationCommands(CLIENT_ID), {
+    body: buildCommands(),
+  });
+
+  console.log("✅ Commands ready globally");
 }
 
 // ================= READY =================
 client.once("ready", async () => {
-  console.log(`🔥 Logged as ${client.user.tag}`);
-
-  for (const [gid] of client.guilds.cache) {
-    await resetCommands(gid);
-  }
+  console.log(`🔥 Logged in as ${client.user.tag}`);
+  await registerCommands();
 });
 
 // ================= INTERACTIONS =================
 client.on("interactionCreate", async interaction => {
 
-  if (interaction.isButton()) {
-    await interaction.deferReply({ ephemeral: true });
+  if (!interaction.inGuild()) return;
 
-    const gid = interaction.guildId;
-    const uid = interaction.user.id;
-    const now = Date.now();
+  const guildId = interaction.guildId;
 
-    if (interaction.customId === "checkin") {
-      const existing = await db.get(
-        "SELECT * FROM sessions WHERE guild_id=? AND user_id=?",
-        [gid, uid]
-      );
-      if (existing) return interaction.editReply("⚠️ أنت مسجل بالفعل.");
+  try {
 
-      const stat = await db.get(
-        "SELECT total_entries FROM stats WHERE guild_id=? AND user_id=?",
-        [gid, uid]
-      );
+    if (interaction.isChatInputCommand()) {
 
-      const sessionNo = (stat?.total_entries || 0) + 1;
+      if (interaction.commandName === "wipecommands") {
+        if (interaction.user.id !== OWNER_ID)
+          return interaction.reply({ content: "للأونر فقط", ephemeral: true });
 
-      await db.run(
-        "INSERT INTO sessions VALUES (?,?,?,?)",
-        [gid, uid, now, sessionNo]
-      );
+        const rest = new REST({ version: "10" }).setToken(TOKEN);
+        await rest.put(Routes.applicationCommands(CLIENT_ID), { body: [] });
 
-      return interaction.editReply("✅ تم تسجيل دخولك.");
+        return interaction.reply("تم حذف جميع الأوامر");
+      }
+
+      if (interaction.commandName === "panel") {
+        const ch = interaction.options.getChannel("channel");
+        const embed = await buildPanel(guildId);
+        const msg = await ch.send({ embeds: [embed], components: [buttons()] });
+
+        await db.run(
+          "INSERT OR REPLACE INTO settings(guild_id,panel_channel,panel_message) VALUES(?,?,?)",
+          [guildId, ch.id, msg.id]
+        );
+
+        return interaction.reply({ content: "تم إنشاء البانل", ephemeral: true });
+      }
+
+      if (interaction.commandName === "status") {
+        const open = await db.get(
+          "SELECT * FROM sessions WHERE guild_id=? AND user_id=?",
+          [guildId, interaction.user.id]
+        );
+        if (!open)
+          return interaction.reply({ content: "أنت خارج حالياً", ephemeral: true });
+
+        return interaction.reply({ content: "أنت مسجل دخول", ephemeral: true });
+      }
+
     }
 
-    if (interaction.customId === "checkout") {
-      const s = await db.get(
+    if (interaction.isButton()) {
+
+      await interaction.deferReply({ ephemeral: true });
+
+      const open = await db.get(
         "SELECT * FROM sessions WHERE guild_id=? AND user_id=?",
-        [gid, uid]
+        [guildId, interaction.user.id]
       );
-      if (!s) return interaction.editReply("⚠️ أنت غير مسجل.");
 
-      const duration = now - s.checkin_ms;
+      if (interaction.customId === "checkin") {
 
-      await db.run("DELETE FROM sessions WHERE guild_id=? AND user_id=?", [gid, uid]);
+        if (open)
+          return interaction.editReply("أنت مسجل مسبقاً");
 
-      await db.run(`
-        INSERT INTO stats (guild_id, user_id, total_time_ms, total_entries)
-        VALUES (?, ?, ?, 1)
-        ON CONFLICT(guild_id, user_id)
-        DO UPDATE SET
-          total_time_ms = total_time_ms + ?,
-          total_entries = total_entries + 1
-      `, [gid, uid, duration, duration]);
+        await db.run(
+          "INSERT INTO sessions VALUES(?,?,?)",
+          [guildId, interaction.user.id, now()]
+        );
 
-      await giveRewards(interaction.guild, uid);
+        await updatePanel(interaction.guild);
+        return interaction.editReply("تم تسجيل دخولك");
+      }
 
-      return interaction.editReply(`⏱️ مدة جلستك: ${formatTime(duration)}`);
+      if (interaction.customId === "checkout") {
+
+        if (!open)
+          return interaction.editReply("أنت غير مسجل");
+
+        const duration = now() - open.checkin;
+
+        await db.run(
+          "DELETE FROM sessions WHERE guild_id=? AND user_id=?",
+          [guildId, interaction.user.id]
+        );
+
+        await db.run(`
+          INSERT INTO stats(guild_id,user_id,total_time,total_entries)
+          VALUES(?,?,?,1)
+          ON CONFLICT(guild_id,user_id)
+          DO UPDATE SET
+          total_time=total_time+?,
+          total_entries=total_entries+1
+        `, [guildId, interaction.user.id, duration, duration]);
+
+        await updatePanel(interaction.guild);
+        return interaction.editReply("تم تسجيل خروجك");
+      }
+
     }
+
+  } catch (err) {
+    console.error(err);
+    if (!interaction.replied)
+      interaction.reply({ content: "حدث خطأ", ephemeral: true }).catch(()=>{});
   }
 
-  if (!interaction.isChatInputCommand()) return;
-
-  const { commandName } = interaction;
-  const gid = interaction.guildId;
-  const uid = interaction.user.id;
-
-  if (commandName === "status") {
-    const s = await db.get(
-      "SELECT * FROM sessions WHERE guild_id=? AND user_id=?",
-      [gid, uid]
-    );
-    if (!s) return interaction.reply({ content: "📌 أنت خارج.", ephemeral: true });
-    return interaction.reply({ content: "🟢 أنت داخل.", ephemeral: true });
-  }
-
-  interaction.reply({ content: "✅ الأمر يعمل.", ephemeral: true });
 });
 
 // ================= START =================
 (async () => {
   await initDB();
-  await client.login(TOKEN);
+  client.login(TOKEN);
 })();
